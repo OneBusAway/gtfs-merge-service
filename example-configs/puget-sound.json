@@ -1,0 +1,17 @@
+{
+  "feeds": [
+    "https://metro.kingcounty.gov/gtfs/google_transit.zip",
+    "https://business.wsdot.wa.gov/Transit/csv_files/wsf/google_transit.zip"
+  ],
+  "mergeStrategies": {
+    "agency.txt": "identity",
+    "stops.txt": "fuzzy",
+    "routes.txt": "fuzzy",
+    "trips.txt": "identity",
+    "stop_times.txt": "identity",
+    "calendar.txt": "identity",
+    "shapes.txt": "fuzzy",
+    "transfers.txt": "none"
+  },
+  "outputName": "puget-sound-merged-gtfs.zip"
+}
