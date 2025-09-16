@@ -28,11 +28,6 @@ RUN apt-get update && \
     zip && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy and run AWS CLI installation script
-COPY install-awscli.sh /tmp/install-awscli.sh
-RUN /tmp/install-awscli.sh && \
-    rm /tmp/install-awscli.sh
-
 # Set working directory
 WORKDIR /app
 
