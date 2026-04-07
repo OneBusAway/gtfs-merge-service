@@ -1,5 +1,5 @@
 # Stage 1: Build the Go binary
-FROM golang:1.23-alpine AS builder
+FROM golang:1-alpine AS builder
 
 WORKDIR /build
 
@@ -14,9 +14,9 @@ COPY merge/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gtfs-merge cmd/gtfs-merge/main.go
 
 # Stage 2: Runtime image
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:21-jre
 
-ARG JAR_VERSION=9.0.1
+ARG JAR_VERSION=11.2.2
 ENV JAR_VERSION=${JAR_VERSION}
 
 RUN apt-get update && \
@@ -39,6 +39,11 @@ RUN chmod +x /app/gtfs-merge
 RUN curl \
     -L https://repo1.maven.org/maven2/org/onebusaway/onebusaway-gtfs-merge-cli/${JAR_VERSION}/onebusaway-gtfs-merge-cli-${JAR_VERSION}.jar \
     -o merge-cli.jar
+
+# Download the OneBusAway transformer CLI JAR
+RUN curl \
+    -L https://repo1.maven.org/maven2/org/onebusaway/onebusaway-gtfs-transformer-cli/${JAR_VERSION}/onebusaway-gtfs-transformer-cli-${JAR_VERSION}.jar \
+    -o transformer-cli.jar
 
 # Use ENTRYPOINT for the Go binary
 ENTRYPOINT ["/app/gtfs-merge"]
