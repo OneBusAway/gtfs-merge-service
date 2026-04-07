@@ -21,7 +21,14 @@ func New(jarPath, tempDir string) *Merger {
 }
 
 func (m *Merger) MergeFeeds(feedFiles []string, strategies map[string]string, outputFile string) error {
-	args := []string{"-jar", m.jarPath}
+	javaOpts := os.Getenv("JAVA_OPTS")
+	var args []string
+	if javaOpts != "" {
+		for _, opt := range strings.Fields(javaOpts) {
+			args = append(args, opt)
+		}
+	}
+	args = append(args, "-jar", m.jarPath)
 
 	for file, strategy := range strategies {
 		args = append(args, fmt.Sprintf("--file=%s", file))

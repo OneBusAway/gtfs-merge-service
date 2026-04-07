@@ -23,6 +23,7 @@ The service requires several environment variables to be set:
 - `AWS_ENDPOINT_URL`: S3-compatible endpoint URL (or Cloudflare R2)
 - `S3_BUCKET`: Destination bucket for the merged GTFS feed
 - `ALLOWED_DOMAINS`: Comma-separated list of allowed domains for config and feed URLs (security feature)
+- `JAVA_OPTS` (optional): JVM flags passed to the merge CLI. Use this to increase heap size for large feeds (e.g. `-Xmx1G -server`).
 
 Copy env.example to .env and fill in the file.
 
@@ -32,6 +33,7 @@ AWS_SECRET_ACCESS_KEY=your-secret-key
 AWS_ENDPOINT_URL=https://your-account.r2.cloudflarestorage.com
 S3_BUCKET=your-bucket-name
 ALLOWED_DOMAINS=example.com,transit.agency.gov
+JAVA_OPTS=-Xmx1G -server
 ```
 
 ## Run the container
