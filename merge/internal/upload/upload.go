@@ -1,8 +1,10 @@
 package upload
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -52,6 +54,8 @@ func New(accessKeyID, secretAccessKey, endpoint, bucket string) (*Uploader, erro
 	}, nil
 }
 
+// UploadFile uploads the file at filePath to key with ContentType
+// "application/zip" (used for the merged GTFS bundle).
 func (u *Uploader) UploadFile(filePath, key string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -69,12 +73,23 @@ func (u *Uploader) UploadFile(filePath, key string) error {
 	fmt.Printf("Uploading %s (%.2f MB) to s3://%s/%s\n",
 		filePath, float64(fileInfo.Size())/(1024*1024), u.bucket, key)
 
-	_, err = u.client.PutObject(context.Background(), &s3.PutObjectInput{
+	return u.upload(file, fileInfo.Size(), key, "application/zip")
+}
+
+// UploadBytes uploads data (e.g. a generated report.json) to key with the
+// given contentType.
+func (u *Uploader) UploadBytes(data []byte, key, contentType string) error {
+	fmt.Printf("Uploading %d bytes to s3://%s/%s\n", len(data), u.bucket, key)
+	return u.upload(bytes.NewReader(data), int64(len(data)), key, contentType)
+}
+
+func (u *Uploader) upload(body io.Reader, size int64, key, contentType string) error {
+	_, err := u.client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:        aws.String(u.bucket),
 		Key:           aws.String(key),
-		Body:          file,
-		ContentType:   aws.String("application/zip"),
-		ContentLength: aws.Int64(fileInfo.Size()),
+		Body:          body,
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(size),
 	})
 
 	if err != nil {

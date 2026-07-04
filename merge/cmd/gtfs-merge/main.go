@@ -14,6 +14,7 @@ import (
 	"github.com/onebusaway/gtfs-merge-service/internal/inject"
 	"github.com/onebusaway/gtfs-merge-service/internal/merge"
 	"github.com/onebusaway/gtfs-merge-service/internal/pairmerge"
+	"github.com/onebusaway/gtfs-merge-service/internal/report"
 	"github.com/onebusaway/gtfs-merge-service/internal/transform"
 	"github.com/onebusaway/gtfs-merge-service/internal/upload"
 	"github.com/onebusaway/gtfs-merge-service/internal/validate"
@@ -67,15 +68,16 @@ func findJar(primaryPath, fallbackName string) (string, error) {
 }
 
 // StageResult records the outcome and duration of one v2 pipeline stage,
-// for logging now and (in a later milestone) serialization into
-// report.json's stages[] (see docs/config-schema.md §3). feedID is set for
-// per-feed stages (download, prepare) and empty for whole-job stages
+// for console logging and for serialization into report.json's stages[]
+// (see docs/config-schema.md §3, and internal/report.Generate, which
+// consumes a converted copy of these as []report.StageInput). feedID is set
+// for per-feed stages (download, prepare) and empty for whole-job stages
 // (combine, post).
 //
 // Note: report.json's documented stage key for downloading is "watch", not
 // "download" — this pipeline uses "download" internally since that's what
-// this stage actually does; a later milestone maps it to "watch" when
-// writing report.json.
+// this stage actually does; internal/report.Generate maps it to "watch"
+// when writing report.json (see stageKeyToReport there).
 type StageResult struct {
 	Key      string
 	FeedID   string
@@ -218,6 +220,48 @@ func injectAdditionalFiles(cfg *config.ConfigV2, downloader *download.Downloader
 	return outputPath, nil
 }
 
+// generateAndUploadReport builds report.json for this run (see
+// internal/report) and uploads it to cfg.Output.ReportKey. Report
+// generation is non-fatal to the overall merge: by the time this runs, the
+// merged bundle has already uploaded successfully, so a failure here
+// (including a panic from report generation itself) is recovered and
+// returned as a plain error for the caller to log as a warning, not fail
+// the run over.
+func generateAndUploadReport(cfg *config.ConfigV2, feedWorkingZip map[string]string, outputZipPath, mergeOutput string, stages []StageResult, uploader *upload.Uploader) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic while generating report: %v", r)
+		}
+	}()
+
+	reportStages := make([]report.StageInput, len(stages))
+	for i, s := range stages {
+		reportStages[i] = report.StageInput{Key: s.Key, FeedID: s.FeedID, Status: s.Status, Duration: s.Duration}
+	}
+
+	rpt, err := report.Generate(report.GenerateInput{
+		Config:         cfg,
+		FeedWorkingZip: feedWorkingZip,
+		OutputZipPath:  outputZipPath,
+		MergeOutput:    mergeOutput,
+		Stages:         reportStages,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to generate report: %w", err)
+	}
+
+	data, err := json.MarshalIndent(rpt, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal report: %w", err)
+	}
+
+	if err := uploader.UploadBytes(data, cfg.Output.ReportKey, "application/json"); err != nil {
+		return fmt.Errorf("failed to upload report: %w", err)
+	}
+
+	return nil
+}
+
 // runV2 executes the v2 pipeline: download -> pair-merge -> prepare ->
 // combine -> inject additional files -> validate -> upload.
 func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) error {
@@ -318,6 +362,20 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 		return fmt.Errorf("failed to upload: %w", err)
 	}
 	fmt.Println("✓ Upload complete")
+
+	// report.json generation is intentionally excluded from the "post"
+	// stage bracket above and given its own stage entry: unlike
+	// inject/validate/upload, a failure here must never fail the overall
+	// run (see generateAndUploadReport) — the merge has already succeeded.
+	fmt.Println("\nStep 10: Generating report.json...")
+	reportStart := time.Now()
+	if err := generateAndUploadReport(cfg, preparedPaths, finalPath, merger.CapturedOutput(), stages, uploader); err != nil {
+		stages = appendStage(stages, "report", "", reportStart, err)
+		fmt.Printf("WARNING: report.json generation failed (merge succeeded regardless): %v\n", err)
+	} else {
+		stages = appendStage(stages, "report", "", reportStart, nil)
+		fmt.Println("✓ report.json generated and uploaded")
+	}
 
 	logStages(stages)
 	return nil

@@ -1,7 +1,9 @@
 package merge
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,8 +12,9 @@ import (
 )
 
 type Merger struct {
-	jarPath string
-	tempDir string
+	jarPath        string
+	tempDir        string
+	capturedOutput bytes.Buffer
 }
 
 func New(jarPath, tempDir string) *Merger {
@@ -19,6 +22,15 @@ func New(jarPath, tempDir string) *Merger {
 		jarPath: jarPath,
 		tempDir: tempDir,
 	}
+}
+
+// CapturedOutput returns the combined stdout+stderr text from the most
+// recent MergeFeeds/MergeFeedsV2 invocation. It's used by report.json
+// generation (see internal/report) to parse the merge JAR's
+// dropped-duplicate log lines; the output is also still streamed live to
+// this process's own stdout/stderr as it always has been (see run).
+func (m *Merger) CapturedOutput() string {
+	return m.capturedOutput.String()
 }
 
 // FileSetting is a per-file duplicate detection/renaming strategy pair, used
@@ -118,8 +130,9 @@ func sortedFileSettingKeys(m map[string]FileSetting) []string {
 
 func (m *Merger) run(args []string, outputFile string) error {
 	cmd := exec.Command("java", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	m.capturedOutput.Reset()
+	cmd.Stdout = io.MultiWriter(os.Stdout, &m.capturedOutput)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &m.capturedOutput)
 
 	fmt.Printf("Running merge command: java %s\n", strings.Join(args, " "))
 
