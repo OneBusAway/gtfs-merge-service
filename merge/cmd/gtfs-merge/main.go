@@ -12,6 +12,7 @@ import (
 	"github.com/onebusaway/gtfs-merge-service/internal/config"
 	"github.com/onebusaway/gtfs-merge-service/internal/download"
 	"github.com/onebusaway/gtfs-merge-service/internal/merge"
+	"github.com/onebusaway/gtfs-merge-service/internal/pairmerge"
 	"github.com/onebusaway/gtfs-merge-service/internal/transform"
 	"github.com/onebusaway/gtfs-merge-service/internal/upload"
 	"github.com/onebusaway/gtfs-merge-service/internal/validate"
@@ -115,6 +116,35 @@ func downloadV2Feeds(cfg *config.ConfigV2, downloader *download.Downloader) (map
 	return paths, nil
 }
 
+// pairMergeFeeds pre-merges each feed with a pairedWith URL: downloads the
+// paired ("upcoming") zip and runs pairmerge.Merge, replacing that feed's
+// working path in feedPaths with the pair-merged output. Feeds without a
+// pairedWith are left untouched. Order follows cfg.Feeds (see
+// pairmerge.Merge's doc comment for why current-then-upcoming argument
+// order matters).
+func pairMergeFeeds(cfg *config.ConfigV2, downloader *download.Downloader, pairMerger *pairmerge.PairMerger, feedPaths map[string]string, stages []StageResult) (map[string]string, []StageResult, error) {
+	for _, feed := range cfg.Feeds {
+		if feed.PairedWith == nil {
+			continue
+		}
+
+		start := time.Now()
+		upcomingPath, err := downloader.DownloadFile(feed.PairedWith.URL, fmt.Sprintf("feed_%s_upcoming.zip", feed.ID))
+		if err == nil {
+			var pairedPath string
+			pairedPath, err = pairMerger.Merge(feed.ID, feedPaths[feed.ID], upcomingPath)
+			if err == nil {
+				feedPaths[feed.ID] = pairedPath
+			}
+		}
+		stages = appendStage(stages, "pair", feed.ID, start, err)
+		if err != nil {
+			return nil, stages, fmt.Errorf("failed to pair-merge feed %s: %w", feed.ID, err)
+		}
+	}
+	return feedPaths, stages, nil
+}
+
 // combinedRules concatenates sharedTransformRules and a feed's own
 // transformRules, in that order (see docs/config-schema.md §1.2).
 func combinedRules(shared, own []json.RawMessage) []json.RawMessage {
@@ -161,9 +191,9 @@ func combineFeeds(cfg *config.ConfigV2, merger *merge.Merger, preparedPaths map[
 	return merger.GetOutputPath(outputFile), nil
 }
 
-// runV2 executes the v2 pipeline: download -> prepare -> combine -> validate
-// -> upload. (Pair-merge and additional-file injection are added in later
-// milestones.)
+// runV2 executes the v2 pipeline: download -> pair-merge -> prepare ->
+// combine -> validate -> upload. (Additional-file injection is added in a
+// later milestone.)
 func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) error {
 	var stages []StageResult
 
@@ -188,7 +218,16 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	}
 	fmt.Printf("✓ Downloaded %d feeds\n", len(feedPaths))
 
-	fmt.Println("\nStep 4: Preparing feeds (transform)...")
+	fmt.Println("\nStep 4: Pair-merging feeds with an upcoming signup...")
+	pairMerger := pairmerge.New(mergeJarPath, tempDir)
+	feedPaths, stages, err = pairMergeFeeds(cfg, downloader, pairMerger, feedPaths, stages)
+	if err != nil {
+		logStages(stages)
+		return err
+	}
+	fmt.Println("✓ Pair-merges complete")
+
+	fmt.Println("\nStep 5: Preparing feeds (transform)...")
 	transformer := transform.New(transformerJarPath, tempDir)
 	preparedPaths, stages, err := prepareFeeds(cfg, transformer, feedPaths, stages)
 	if err != nil {
@@ -197,7 +236,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	}
 	fmt.Println("✓ Feeds prepared")
 
-	fmt.Println("\nStep 5: Combining feeds (merge)...")
+	fmt.Println("\nStep 6: Combining feeds (merge)...")
 	combineStart := time.Now()
 	merger := merge.New(mergeJarPath, tempDir)
 	mergedPath, err := combineFeeds(cfg, merger, preparedPaths, "gtfs.zip")
@@ -208,7 +247,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	}
 	fmt.Println("✓ Feeds merged successfully")
 
-	fmt.Println("\nStep 6: Validating merged feed...")
+	fmt.Println("\nStep 7: Validating merged feed...")
 	postStart := time.Now()
 	validator := validate.New()
 	err = validator.ValidateFeed(mergedPath)
@@ -219,7 +258,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	}
 	fmt.Println("✓ Merged feed validated")
 
-	fmt.Println("\nStep 7: Uploading to S3/R2...")
+	fmt.Println("\nStep 8: Uploading to S3/R2...")
 	uploader, err := upload.New(
 		envConfig.AwsAccessKeyID,
 		envConfig.AwsSecretAccessKey,
