@@ -168,7 +168,12 @@ func TestBuildArgsV2(t *testing.T) {
 			},
 		},
 		{
-			name:      "file settings and global flag combine, JAVA_OPTS prepended",
+			// "context" (and "") never trigger --duplicateRenaming emission
+			// on their own — see buildArgsV2's doc comment on why the flag
+			// must be all-or-nothing across files, not per file: the JAR
+			// pairs --file/--duplicateDetection/--duplicateRenaming by list
+			// index (GtfsMergerMain.buildMerger), not by filename.
+			name:      "context renaming alone omits --duplicateRenaming entirely",
 			feedFiles: []string{"feed_a.zip", "feed_b.zip"},
 			fileSettings: map[string]FileSetting{
 				"agency.txt": {Detection: "identity", Renaming: "context"},
@@ -179,8 +184,47 @@ func TestBuildArgsV2(t *testing.T) {
 			want: []string{
 				"-Xmx4g",
 				"-jar", "merge-cli.jar",
-				"--file=agency.txt", "--duplicateDetection=identity", "--duplicateRenaming=context",
+				"--file=agency.txt", "--duplicateDetection=identity",
 				"--errorOnDroppedDuplicates",
+				"feed_a.zip", "feed_b.zip",
+				"/tmp/work/gtfs.zip",
+			},
+		},
+		{
+			name:      "empty renaming alone also omits --duplicateRenaming entirely",
+			feedFiles: []string{"feed_a.zip"},
+			fileSettings: map[string]FileSetting{
+				"stops.txt": {Detection: "fuzzy", Renaming: ""},
+			},
+			duplicateHandling: "ignore",
+			outputFile:        "gtfs.zip",
+			want: []string{
+				"-jar", "merge-cli.jar",
+				"--file=stops.txt", "--duplicateDetection=fuzzy",
+				"feed_a.zip",
+				"/tmp/work/gtfs.zip",
+			},
+		},
+		{
+			// One file wants "agency" renaming; the JAR's positional
+			// pairing means every file's --duplicateRenaming must now be
+			// emitted explicitly, or the ones that follow "stops.txt" in
+			// sorted order would silently inherit the wrong renaming
+			// strategy. "trips.txt" left renaming empty, so it gets an
+			// explicit "context" (the JAR default) rather than being
+			// omitted.
+			name:      "agency renaming on one file forces explicit renaming on all files",
+			feedFiles: []string{"feed_a.zip", "feed_b.zip"},
+			fileSettings: map[string]FileSetting{
+				"stops.txt": {Detection: "identity", Renaming: "agency"},
+				"trips.txt": {Detection: "identity", Renaming: ""},
+			},
+			duplicateHandling: "ignore",
+			outputFile:        "gtfs.zip",
+			want: []string{
+				"-jar", "merge-cli.jar",
+				"--file=stops.txt", "--duplicateDetection=identity", "--duplicateRenaming=agency",
+				"--file=trips.txt", "--duplicateDetection=identity", "--duplicateRenaming=context",
 				"feed_a.zip", "feed_b.zip",
 				"/tmp/work/gtfs.zip",
 			},

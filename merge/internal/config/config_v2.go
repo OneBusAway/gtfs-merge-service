@@ -56,7 +56,10 @@ type MergeSettingsV2 struct {
 
 // FileMergeSettingV2 is a per-file duplicate detection/renaming strategy
 // pair. Only files in independentMergeFiles may be used as keys in
-// MergeSettingsV2.Files.
+// MergeSettingsV2.Files. Renaming is optional: an empty string is valid and
+// means "use the JAR's own default" (equivalent to "context"; see
+// docs/config-schema.md §1.5's emission note for why the Go service can't
+// simply omit --duplicateRenaming for only some files).
 type FileMergeSettingV2 struct {
 	Detection string `json:"detection"`
 	Renaming  string `json:"renaming"`
@@ -67,6 +70,16 @@ type FileMergeSettingV2 struct {
 type AdditionalFileV2 struct {
 	Filename string `json:"filename"`
 	URL      string `json:"url"`
+}
+
+// reservedFilenames are additionalFiles filenames that are always rejected
+// even though they match additionalFilenamePattern: "." and ".." are valid
+// path segments to an unzip/os.Create call, and each resolves to a
+// directory rather than a real file, opening a zip-slip-style write outside
+// the intended location.
+var reservedFilenames = map[string]bool{
+	".":  true,
+	"..": true,
 }
 
 // NormalizedConfig wraps either a v1 or v2 config so callers can branch on
@@ -265,6 +278,9 @@ func (c *ConfigV2) Validate(allowedDomains []string) error {
 	if strings.Contains(c.Output.ReportKey, "..") {
 		return fmt.Errorf("output.reportKey must not contain '..'")
 	}
+	if c.Output.Key == c.Output.ReportKey {
+		return fmt.Errorf("output.key and output.reportKey must not be the same")
+	}
 
 	if c.MergeSettings.DuplicateHandling == "" {
 		c.MergeSettings.DuplicateHandling = "ignore"
@@ -283,15 +299,24 @@ func (c *ConfigV2) Validate(allowedDomains []string) error {
 		if !validDetection[setting.Detection] {
 			return fmt.Errorf("invalid detection strategy '%s' for file '%s'", setting.Detection, file)
 		}
-		if !validRenaming[setting.Renaming] {
+		// Renaming is optional: an empty value is left as-is (meaning "use
+		// the JAR's own default"), but a non-empty value must still be one
+		// of the recognized strategies.
+		if setting.Renaming != "" && !validRenaming[setting.Renaming] {
 			return fmt.Errorf("invalid renaming strategy '%s' for file '%s'", setting.Renaming, file)
 		}
 	}
 
+	seenAdditionalFilenames := make(map[string]bool, len(c.AdditionalFiles))
 	for _, af := range c.AdditionalFiles {
-		if af.Filename == "" || !additionalFilenamePattern.MatchString(af.Filename) {
+		if af.Filename == "" || reservedFilenames[af.Filename] || !additionalFilenamePattern.MatchString(af.Filename) {
 			return fmt.Errorf("invalid additionalFiles filename '%s'", af.Filename)
 		}
+		if seenAdditionalFilenames[af.Filename] {
+			return fmt.Errorf("duplicate additionalFiles filename '%s'", af.Filename)
+		}
+		seenAdditionalFilenames[af.Filename] = true
+
 		if err := validateURL(af.URL, allowedDomains); err != nil {
 			return fmt.Errorf("invalid additionalFiles URL '%s': %w", af.URL, err)
 		}

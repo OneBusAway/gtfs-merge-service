@@ -65,14 +65,18 @@ func fileForEntityType(entityType string) string {
 	return entityType
 }
 
-// parseDroppedDuplicates scans mergeOutput (the merge JAR's combined
-// stdout+stderr, captured via merge.Merger.CapturedOutput) for
-// "duplicate entity:" lines, parsing up to limit of them into
-// DroppedDuplicate entries. truncated is true if more lines matched than
-// limit. A matching line that the regex can't further decompose is still
-// recorded (raw only, parsed omitted) rather than dropped, per
-// docs/config-schema.md §3.1 ("parsed... may be absent if the line
-// couldn't be parsed").
+// parseDroppedDuplicates scans mergeOutput for "duplicate entity:" lines,
+// parsing up to limit of them into DroppedDuplicate entries. truncated is
+// true if more lines matched than limit. In the real v2 pipeline,
+// mergeOutput is merge.Merger.CapturedDuplicateLines' already-filtered,
+// already-capped output, so this loop's own filtering/limit logic is
+// effectively a no-op there (report.Generate relies on
+// GenerateInput.MergeOutputTruncated instead of this function's truncated
+// return for that reason) — it's kept here so parseDroppedDuplicates
+// remains independently testable against arbitrary raw text. A matching
+// line that the regex can't further decompose is still recorded (raw only,
+// parsed omitted) rather than dropped, per docs/config-schema.md §3.1
+// ("parsed... may be absent if the line couldn't be parsed").
 func parseDroppedDuplicates(mergeOutput string, limit int) (dropped []DroppedDuplicate, truncated bool) {
 	dropped = []DroppedDuplicate{}
 	if mergeOutput == "" {

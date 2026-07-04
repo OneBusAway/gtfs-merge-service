@@ -136,14 +136,16 @@ func TestIntegrationFullPipeline(t *testing.T) {
 		MergeSettings: config.MergeSettingsV2{Files: fileSettings},
 	}
 
+	mergeLines, mergeLinesTruncated := merger.CapturedDuplicateLines()
 	rpt, err := Generate(GenerateInput{
 		Config: cfg,
 		FeedWorkingZip: map[string]string{
 			"alpha": alphaPrepared,
 			"beta":  betaPrepared,
 		},
-		OutputZipPath: outputZip,
-		MergeOutput:   merger.CapturedOutput(),
+		OutputZipPath:        outputZip,
+		MergeOutput:          mergeLines,
+		MergeOutputTruncated: mergeLinesTruncated,
 	})
 	if err != nil {
 		t.Fatalf("Generate() error: %v", err)

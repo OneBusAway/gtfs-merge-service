@@ -227,7 +227,7 @@ func injectAdditionalFiles(cfg *config.ConfigV2, downloader *download.Downloader
 // (including a panic from report generation itself) is recovered and
 // returned as a plain error for the caller to log as a warning, not fail
 // the run over.
-func generateAndUploadReport(cfg *config.ConfigV2, feedWorkingZip map[string]string, outputZipPath, mergeOutput string, stages []StageResult, uploader *upload.Uploader) (err error) {
+func generateAndUploadReport(cfg *config.ConfigV2, feedWorkingZip map[string]string, outputZipPath, mergeOutput string, mergeOutputTruncated bool, stages []StageResult, uploader *upload.Uploader) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic while generating report: %v", r)
@@ -240,11 +240,12 @@ func generateAndUploadReport(cfg *config.ConfigV2, feedWorkingZip map[string]str
 	}
 
 	rpt, err := report.Generate(report.GenerateInput{
-		Config:         cfg,
-		FeedWorkingZip: feedWorkingZip,
-		OutputZipPath:  outputZipPath,
-		MergeOutput:    mergeOutput,
-		Stages:         reportStages,
+		Config:               cfg,
+		FeedWorkingZip:       feedWorkingZip,
+		OutputZipPath:        outputZipPath,
+		MergeOutput:          mergeOutput,
+		MergeOutputTruncated: mergeOutputTruncated,
+		Stages:               reportStages,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to generate report: %w", err)
@@ -369,7 +370,8 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	// run (see generateAndUploadReport) — the merge has already succeeded.
 	fmt.Println("\nStep 10: Generating report.json...")
 	reportStart := time.Now()
-	if err := generateAndUploadReport(cfg, preparedPaths, finalPath, merger.CapturedOutput(), stages, uploader); err != nil {
+	mergeLines, mergeLinesTruncated := merger.CapturedDuplicateLines()
+	if err := generateAndUploadReport(cfg, preparedPaths, finalPath, mergeLines, mergeLinesTruncated, stages, uploader); err != nil {
 		stages = appendStage(stages, "report", "", reportStart, err)
 		fmt.Printf("WARNING: report.json generation failed (merge succeeded regardless): %v\n", err)
 	} else {

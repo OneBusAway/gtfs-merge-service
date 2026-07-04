@@ -6,11 +6,8 @@ import (
 	"time"
 
 	"github.com/onebusaway/gtfs-merge-service/internal/config"
+	"github.com/onebusaway/gtfs-merge-service/internal/merge"
 )
-
-// droppedDuplicatesLimit caps merge.droppedDuplicates (see
-// docs/config-schema.md §3.1).
-const droppedDuplicatesLimit = 500
 
 // StageInput is the caller-supplied shape of one pipeline stage's timing
 // data — a copy of cmd/gtfs-merge's StageResult, duplicated here (rather
@@ -47,9 +44,19 @@ type GenerateInput struct {
 	FeedWorkingZip map[string]string
 	// OutputZipPath is the final (post-inject) merged zip's path.
 	OutputZipPath string
-	// MergeOutput is the merge JAR's captured combined stdout+stderr (see
-	// merge.Merger.CapturedOutput), scanned for dropped-duplicate lines.
+	// MergeOutput is the merge JAR's captured, already-filtered
+	// "duplicate entity:" lines (see merge.Merger.CapturedDuplicateLines),
+	// joined by "\n" and capped at merge.DroppedDuplicatesLimit lines.
+	// parseDroppedDuplicates parses each retained line into a
+	// DroppedDuplicate.
 	MergeOutput string
+	// MergeOutputTruncated reports whether the merge JAR actually logged
+	// more than merge.DroppedDuplicatesLimit "duplicate entity:" lines (see
+	// merge.Merger.CapturedDuplicateLines) — i.e. whether MergeOutput above
+	// is missing entries. This can't be derived from MergeOutput alone once
+	// it's already been capped upstream, so the caller passes it through
+	// separately.
+	MergeOutputTruncated bool
 	// Stages are the pipeline's per-stage timings, in execution order, in
 	// main.go's internal key vocabulary (mapped to report.json's via
 	// stageKeyToReport). Generate appends the "report" stage itself.
@@ -131,7 +138,14 @@ func Generate(in GenerateInput) (*Report, error) {
 	}
 	warnings = append(warnings, renameWarnings...)
 
-	dropped, truncated := parseDroppedDuplicates(in.MergeOutput, droppedDuplicatesLimit)
+	// in.MergeOutput is already filtered and capped to at most
+	// merge.DroppedDuplicatesLimit lines by merge.Merger's capture (see
+	// GenerateInput.MergeOutput's doc comment), so parseDroppedDuplicates
+	// itself will never report truncation here; the real truncation signal
+	// comes from in.MergeOutputTruncated, computed upstream where the
+	// uncapped line count is actually known.
+	dropped, _ := parseDroppedDuplicates(in.MergeOutput, merge.DroppedDuplicatesLimit)
+	truncated := in.MergeOutputTruncated
 
 	stages := make([]StageReport, 0, len(in.Stages)+1)
 	for _, s := range in.Stages {

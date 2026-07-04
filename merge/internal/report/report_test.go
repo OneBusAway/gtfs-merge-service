@@ -255,6 +255,52 @@ func TestGeneratePairedFlag(t *testing.T) {
 	}
 }
 
+// TestGenerateHonorsMergeOutputTruncatedFlag verifies that Generate reports
+// merge.droppedDuplicatesTruncated from the caller-supplied
+// GenerateInput.MergeOutputTruncated, not from re-deriving it against
+// MergeOutput's own length. In the real v2 pipeline, MergeOutput has
+// already been capped upstream by merge.Merger's bounded capture (see
+// merge.DroppedDuplicatesLimit), so by the time Generate sees it, there's
+// no way to tell from the text alone whether more lines existed — only the
+// caller (which saw the uncapped count) knows that.
+func TestGenerateHonorsMergeOutputTruncatedFlag(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "feed.zip")
+	writeGTFSZip(t, zipPath, map[string]string{
+		"stops.txt": "stop_id,stop_name,stop_lat,stop_lon\n1,S,1.0,1.0\n",
+	})
+	outputZip := filepath.Join(dir, "gtfs.zip")
+	writeGTFSZip(t, outputZip, map[string]string{
+		"stops.txt": "stop_id,stop_name,stop_lat,stop_lon\n1,S,1.0,1.0\n",
+	})
+
+	cfg := &config.ConfigV2{
+		Feeds: []config.FeedV2{{ID: "everett", URL: "https://example.com/everett.zip"}},
+	}
+
+	// Only one dropped-duplicate line is present in MergeOutput (well under
+	// any limit), but MergeOutputTruncated is explicitly set true, as the
+	// merge package's capture would if it had seen more than
+	// merge.DroppedDuplicatesLimit matching lines overall before capping
+	// what it handed to Generate.
+	rpt, err := Generate(GenerateInput{
+		Config:               cfg,
+		FeedWorkingZip:       map[string]string{"everett": zipPath},
+		OutputZipPath:        outputZip,
+		MergeOutput:          "duplicate entity: type=class org.onebusaway.gtfs.model.Stop id=1_1234",
+		MergeOutputTruncated: true,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error: %v", err)
+	}
+	if !rpt.Merge.DroppedDuplicatesTruncated {
+		t.Errorf("DroppedDuplicatesTruncated = false, want true (from GenerateInput.MergeOutputTruncated)")
+	}
+	if len(rpt.Merge.DroppedDuplicates) != 1 {
+		t.Errorf("len(DroppedDuplicates) = %d, want 1", len(rpt.Merge.DroppedDuplicates))
+	}
+}
+
 func TestGenerateFailsWhenOutputZipMissing(t *testing.T) {
 	cfg := &config.ConfigV2{Feeds: []config.FeedV2{{ID: "everett", URL: "https://example.com/everett.zip"}}}
 

@@ -59,7 +59,7 @@ Everything in this document reflects the real behavior of
 | `output.key` | string | yes | Destination object key for the merged `gtfs.zip` in the output bucket. Must not contain `..`. |
 | `output.reportKey` | string | yes | Destination object key for `report.json` (see §3). Must not contain `..`. |
 | `feeds` | array of Feed | yes, non-empty | Input feeds, **in merge order**. See §1.3 for merge-order semantics. |
-| `sharedTransformRules` | array of raw JSON objects | no | Transformer-native rule objects (see §2) applied, in array order, to **every** feed after its own `feeds[].transformRules` and before the big merge. Passed through verbatim, one object per line, to `transformer-cli.jar`. |
+| `sharedTransformRules` | array of raw JSON objects | no | Transformer-native rule objects (see §2) applied, in array order, to **every** feed **before** its own `feeds[].transformRules`, and before the big merge. Passed through verbatim, one object per line, to `transformer-cli.jar`. Shared rules run first because they establish the common baseline every feed should get (e.g. dropping unused routes); each feed's own rules then run afterward to refine or override that baseline for its own specifics. |
 | `mergeSettings.duplicateHandling` | enum: `ignore` \| `log` \| `fail` | no (default `ignore`) | **Global** — applies to the whole merge run, not per file. See §1.4. |
 | `mergeSettings.files` | map\<filename, FileMergeSetting\> | no | Per-file duplicate detection/renaming overrides for files with an independent merge strategy. See §1.5. |
 | `additionalFiles` | array of AdditionalFile | no | Files that are downloaded and copied into the merged output as-is (not merged, not transformed) — e.g. `translations.txt`. |
@@ -72,7 +72,7 @@ Everything in this document reflects the real behavior of
 | `name` | string | no | Human-readable label, used only in the report. |
 | `url` | string | yes | Source GTFS zip URL. Must pass the service's `ALLOWED_DOMAINS` check (same `validateURL` used for v1 feed URLs). |
 | `prefix` | string | no | **Informational only.** Used for report bucketing (e.g. `prefixHistogram`) — it is never passed to the merge or transform JARs. If you want IDs actually prefixed, do it with a `transformRules` `update` op (see §2.4) or via `mergeSettings.files[...].renaming`. |
-| `transformRules` | array of raw JSON objects | no | Transformer-native rule objects (§2), passed through verbatim, applied to this feed only, before the big merge. Run in array order, after `pairedWith` pre-merge (if present). |
+| `transformRules` | array of raw JSON objects | no | Transformer-native rule objects (§2), passed through verbatim, applied to this feed only, before the big merge. Run in array order, after `sharedTransformRules` (if any) and after `pairedWith` pre-merge (if present). |
 | `pairedWith.url` | string | no | A second signup zip for the same agency (e.g. an "upcoming" feed). If present, `pairedWith.url` is merged into `url` using **default** merge settings (JAR auto-detection, no explicit `--file`/`--duplicateDetection` flags) as a preparatory step, **before** this feed participates in the main multi-feed merge. |
 
 **AdditionalFile object:**
@@ -115,8 +115,27 @@ per-file, so there is no `mergeSettings.files[...].duplicateHandling`.
 
 | Key | Enum values | Meaning |
 |---|---|---|
-| `detection` | `identity` \| `fuzzy` \| `none` | Duplicate **detection** strategy for this file (`--duplicateDetection`). |
-| `renaming` | `context` \| `agency` | Duplicate **renaming** strategy for this file (`--duplicateRenaming`). `context` prefixes IDs with an index-derived prefix (`a-`, `b-`, ...); `agency` prefixes IDs with the owning feed's agency ID. |
+| `detection` | `identity` \| `fuzzy` \| `none` | Duplicate **detection** strategy for this file (`--duplicateDetection`). Required for every file listed in `mergeSettings.files`. |
+| `renaming` | *(empty, default)* \| `context` \| `agency` | Duplicate **renaming** strategy for this file (`--duplicateRenaming`). **Optional** — leave it empty (or omit the key) to fall back to the JAR's own default, which is equivalent to `context`. `context` prefixes IDs with an index-derived prefix (`a-`, `b-`, ...); `agency` prefixes IDs with the owning feed's agency ID. |
+
+**Renaming emission note:** `--file`, `--duplicateDetection`, and
+`--duplicateRenaming` are positional, index-paired lists in the JAR
+(`GtfsMergerMain.buildMerger` walks `fileOptions` by index and reads
+`duplicateRenamingOptions.get(i)` for the same index `i`) — they are **not**
+matched up by filename. That means the Go service cannot omit
+`--duplicateRenaming` for only *some* of the files in `mergeSettings.files`
+without shifting every later file's renaming strategy onto the wrong file.
+So the service emits the flag all-or-nothing across the whole
+`mergeSettings.files` map for one merge run:
+
+- If **no** file requests `renaming: "agency"`, `--duplicateRenaming` is
+  omitted entirely, for every file (this also keeps such configs compatible
+  with JAR builds that don't have the flag at all — see the deploy note in
+  §3).
+- If **any** file requests `renaming: "agency"`, `--duplicateRenaming` is
+  emitted for **every** file in the map, using an explicit `context` for
+  files that left `renaming` empty or set it to `context` — so the
+  positional pairing always stays intact.
 
 Only files with an **independent** merge strategy in the JAR may be keys of
 `mergeSettings.files`:
@@ -345,8 +364,9 @@ successfully. **Report generation failure is a warning, not a fatal error**:
 if it fails (including a panic), the run still exits 0 — the merge already
 succeeded by that point — and the failure is logged prominently instead.
 
-> **Deploy prerequisite:** `mergeSettings.files[...].renaming` (§1.5) depends
-> on a `--duplicateRenaming` CLI flag that **does not exist in the
+> **Deploy prerequisite (narrowed to `agency` renaming only):**
+> `mergeSettings.files[...].renaming: "agency"` (§1.5) depends on a
+> `--duplicateRenaming` CLI flag that **does not exist in the
 > `onebusaway-gtfs-merge-cli` version this project's `Dockerfile` currently
 > downloads (`JAR_VERSION=11.2.2`)**. That flag was added to `gtfs-modules`
 > as unreleased work (commit `f9cd94d4`, on top of an unreleased
@@ -354,9 +374,18 @@ succeeded by that point — and the failure is logged prominently instead.
 > downloading the real `11.2.2` artifact from Maven Central and confirming
 > its `--help` output has no `--duplicateRenaming` option, then building the
 > `gtfs-modules` checkout from source and confirming the option exists and
-> works there. Until a `gtfs-modules` release containing this flag ships and
-> the `Dockerfile`'s `JAR_VERSION` is bumped to it, any config using
-> `mergeSettings.files[...].renaming` will fail against the deployed image
+> works there.
+>
+> Because the Go service only ever emits `--duplicateRenaming` when at
+> least one file in `mergeSettings.files` requests `renaming: "agency"` (see
+> §1.5's emission note — the flag can't be omitted for only *some* files
+> without misaligning the JAR's positional `--file`/`--duplicateDetection`/
+> `--duplicateRenaming` pairing), **detection-only configs, and configs that
+> only use `renaming: "context"` (or leave it empty) work today against the
+> pinned `11.2.2` image.** Only a config with at least one file set to
+> `renaming: "agency"` still requires a `gtfs-modules` release containing
+> this flag, with the `Dockerfile`'s `JAR_VERSION` bumped to it — until
+> then, that specific config shape will fail against the deployed image
 > with `Unknown option: '--duplicateRenaming=...'`.
 
 ```json
@@ -393,7 +422,7 @@ succeeded by that point — and the failure is logged prominently instead.
     "renameCounts": {"stops.txt": 42, "trips.txt": 3}
   },
   "stages": [
-    {"key": "watch", "feedId": "everett", "status": "ok", "durationMs": 1200},
+    {"key": "watch", "status": "ok", "durationMs": 1200},
     {"key": "pair", "feedId": "everett", "status": "ok", "durationMs": 3400},
     {"key": "prepare", "feedId": "everett", "status": "ok", "durationMs": 890},
     {"key": "combine", "status": "ok", "durationMs": 15230},
@@ -416,7 +445,7 @@ succeeded by that point — and the failure is logged prominently instead.
   - `agencies[]` — `{agencyId, name}` pairs found in this input's `agency.txt`. `agencyId` defaults to `agencyName` (or `""`) when the `agency_id` column is entirely absent (it's optional for single-agency feeds) — but is left as whatever's in a present-but-blank cell, since that's a data quality issue in the source feed, not a missing-column case.
   - `counts` — `{stops, routes, trips, calendars}` row counts. `calendars` is `calendar.txt` row count plus any `calendar_dates.txt` `service_id`s not already in `calendar.txt`.
   - `serviceRange` — `{start, end}` as `YYYYMMDD` strings: min `start_date`/max `end_date` across `calendar.txt`, falling back to min/max `date` across `calendar_dates.txt` only if `calendar.txt` produced no range at all (missing file, or no valid rows) — it is not a union of both.
-  - `bbox` — `{minLat, maxLat, minLon, maxLon}` over this input's `stops.txt`; rows with blank/unparseable coordinates are skipped, and so are `location_type` 3/4 (generic node/boundary) rows when a `location_type` column is present. Omitted entirely (not `null`, just absent from the JSON) if no stop had valid coordinates.
+  - `bbox` — `{minLat, maxLat, minLon, maxLon}` over this input's `stops.txt`; rows with blank/unparseable coordinates are skipped, and so are rows with `location_type >= 3` (generic node, boarding area, and any future values) when a `location_type` column is present. Omitted entirely (not `null`, just absent from the JSON) if no stop had valid coordinates.
   - `sampleIds` — up to 3 `stop_id`/`route_id`/`trip_id` values each, in file (row) order.
 - **`output`**: the same shape as one `inputs[]` entry, computed against the final (post-inject) merged zip, plus:
   - `byteSize` — size in bytes of the merged `gtfs.zip`.

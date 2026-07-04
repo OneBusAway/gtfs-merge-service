@@ -236,9 +236,29 @@ func TestConfigV2Validate(t *testing.T) {
 			errContains: "invalid renaming strategy",
 		},
 		{
+			name: "empty renaming is valid (optional)",
+			mutate: func(c *ConfigV2) {
+				c.MergeSettings.Files["stops.txt"] = FileMergeSettingV2{Detection: "identity", Renaming: ""}
+			},
+		},
+		{
 			name: "additionalFiles bad filename with path separator",
 			mutate: func(c *ConfigV2) {
 				c.AdditionalFiles = []AdditionalFileV2{{Filename: "../etc/passwd", URL: "https://example.com/x"}}
+			},
+			errContains: "invalid additionalFiles filename",
+		},
+		{
+			name: "additionalFiles filename is a single dot",
+			mutate: func(c *ConfigV2) {
+				c.AdditionalFiles = []AdditionalFileV2{{Filename: ".", URL: "https://example.com/x"}}
+			},
+			errContains: "invalid additionalFiles filename",
+		},
+		{
+			name: "additionalFiles filename is dot-dot",
+			mutate: func(c *ConfigV2) {
+				c.AdditionalFiles = []AdditionalFileV2{{Filename: "..", URL: "https://example.com/x"}}
 			},
 			errContains: "invalid additionalFiles filename",
 		},
@@ -248,6 +268,23 @@ func TestConfigV2Validate(t *testing.T) {
 				c.AdditionalFiles = []AdditionalFileV2{{Filename: "translations.txt", URL: "https://malicious.com/x"}}
 			},
 			errContains: "invalid additionalFiles URL",
+		},
+		{
+			name: "additionalFiles duplicate filenames",
+			mutate: func(c *ConfigV2) {
+				c.AdditionalFiles = []AdditionalFileV2{
+					{Filename: "translations.txt", URL: "https://example.com/x"},
+					{Filename: "translations.txt", URL: "https://example.com/y"},
+				}
+			},
+			errContains: "duplicate additionalFiles filename",
+		},
+		{
+			name: "output.key and output.reportKey are the same",
+			mutate: func(c *ConfigV2) {
+				c.Output.ReportKey = c.Output.Key
+			},
+			errContains: "output.key and output.reportKey must not be the same",
 		},
 	}
 
