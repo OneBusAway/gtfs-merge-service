@@ -14,23 +14,37 @@ import (
 	"github.com/onebusaway/gtfs-merge-service/internal/validate"
 )
 
-// loadConfiguration loads the configuration from either a URL or a file path
+// loadConfiguration loads the configuration from either a URL or a file path.
+// It sniffs the config's schema version; v1 configs are parsed and validated
+// exactly as before, and v2 configs are validated but not yet executable
+// (see config v2 execution note below).
 func loadConfiguration(configURL, configPath string, allowedDomains []string) (*config.Config, error) {
+	var normalized *config.NormalizedConfig
+	var err error
+
 	if configURL != "" {
 		fmt.Println("\nStep 2: Loading configuration from URL...")
-		cfg, err := config.LoadConfigFromURL(configURL, allowedDomains)
+		normalized, err = config.LoadNormalizedConfigFromURL(configURL, allowedDomains)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load config from URL: %w", err)
 		}
-		return cfg, nil
+	} else {
+		fmt.Println("\nStep 2: Loading configuration from file...")
+		normalized, err = config.LoadNormalizedConfigFromFile(configPath, allowedDomains)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load config from file: %w", err)
+		}
 	}
 
-	fmt.Println("\nStep 2: Loading configuration from file...")
-	cfg, err := config.LoadConfigFromFile(configPath, allowedDomains)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config from file: %w", err)
+	if normalized.IsV2() {
+		// Config v2 execution (transform rules, paired feeds, per-file merge
+		// settings, additional files, report.json generation) is not wired up
+		// yet. Loading and validation are complete; wiring the execution path
+		// here would be speculative ahead of the milestones that implement it.
+		return nil, fmt.Errorf("config v2 execution not yet implemented")
 	}
-	return cfg, nil
+
+	return normalized.V1, nil
 }
 
 // downloadFeeds handles the downloading of GTFS feeds
