@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/onebusaway/gtfs-merge-service/internal/config"
+	"github.com/onebusaway/gtfs-merge-service/internal/download"
 )
 
 func TestLoadConfiguration(t *testing.T) {
@@ -255,5 +256,21 @@ func TestCombinedRules(t *testing.T) {
 
 	if got := combinedRules(nil, nil); len(got) != 0 {
 		t.Errorf("combinedRules(nil, nil) = %v, want empty", got)
+	}
+}
+
+func TestInjectAdditionalFilesNoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	downloader := download.New(tmpDir)
+
+	cfg := &config.ConfigV2{}
+	mergedPath := filepath.Join(tmpDir, "gtfs.zip")
+
+	got, err := injectAdditionalFiles(cfg, downloader, mergedPath, tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != mergedPath {
+		t.Errorf("injectAdditionalFiles() = %q, want unchanged mergedPath %q", got, mergedPath)
 	}
 }

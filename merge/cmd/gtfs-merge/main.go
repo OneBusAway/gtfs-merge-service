@@ -11,6 +11,7 @@ import (
 
 	"github.com/onebusaway/gtfs-merge-service/internal/config"
 	"github.com/onebusaway/gtfs-merge-service/internal/download"
+	"github.com/onebusaway/gtfs-merge-service/internal/inject"
 	"github.com/onebusaway/gtfs-merge-service/internal/merge"
 	"github.com/onebusaway/gtfs-merge-service/internal/pairmerge"
 	"github.com/onebusaway/gtfs-merge-service/internal/transform"
@@ -191,9 +192,34 @@ func combineFeeds(cfg *config.ConfigV2, merger *merge.Merger, preparedPaths map[
 	return merger.GetOutputPath(outputFile), nil
 }
 
+// injectAdditionalFiles downloads each configured additional file and
+// rewrites mergedPath to add or replace those entries, returning the path
+// to the resulting zip. It is a no-op (returns mergedPath unchanged) when
+// no additionalFiles are configured.
+func injectAdditionalFiles(cfg *config.ConfigV2, downloader *download.Downloader, mergedPath, tempDir string) (string, error) {
+	if len(cfg.AdditionalFiles) == 0 {
+		return mergedPath, nil
+	}
+
+	additional := make(map[string]string, len(cfg.AdditionalFiles))
+	for _, af := range cfg.AdditionalFiles {
+		localPath, err := downloader.DownloadFile(af.URL, fmt.Sprintf("additional_%s", af.Filename))
+		if err != nil {
+			return "", fmt.Errorf("failed to download additional file %s: %w", af.Filename, err)
+		}
+		additional[af.Filename] = localPath
+	}
+
+	outputPath := filepath.Join(tempDir, "gtfs-with-additional-files.zip")
+	if err := inject.Inject(mergedPath, additional, outputPath); err != nil {
+		return "", fmt.Errorf("failed to inject additional files: %w", err)
+	}
+
+	return outputPath, nil
+}
+
 // runV2 executes the v2 pipeline: download -> pair-merge -> prepare ->
-// combine -> validate -> upload. (Additional-file injection is added in a
-// later milestone.)
+// combine -> inject additional files -> validate -> upload.
 func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) error {
 	var stages []StageResult
 
@@ -247,10 +273,24 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	}
 	fmt.Println("✓ Feeds merged successfully")
 
-	fmt.Println("\nStep 7: Validating merged feed...")
+	// "post" brackets all post-combine work — additional-file injection,
+	// validation, and upload — as a single whole-job stage entry (there is
+	// no dedicated report.json stage key for validate/upload; see
+	// docs/config-schema.md §3.1).
 	postStart := time.Now()
+
+	fmt.Println("\nStep 7: Injecting additional files...")
+	finalPath, err := injectAdditionalFiles(cfg, downloader, mergedPath, tempDir)
+	if err != nil {
+		stages = appendStage(stages, "post", "", postStart, err)
+		logStages(stages)
+		return err
+	}
+	fmt.Println("✓ Additional files injected")
+
+	fmt.Println("\nStep 8: Validating merged feed...")
 	validator := validate.New()
-	err = validator.ValidateFeed(mergedPath)
+	err = validator.ValidateFeed(finalPath)
 	if err != nil {
 		stages = appendStage(stages, "post", "", postStart, err)
 		logStages(stages)
@@ -258,7 +298,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	}
 	fmt.Println("✓ Merged feed validated")
 
-	fmt.Println("\nStep 8: Uploading to S3/R2...")
+	fmt.Println("\nStep 9: Uploading to S3/R2...")
 	uploader, err := upload.New(
 		envConfig.AwsAccessKeyID,
 		envConfig.AwsSecretAccessKey,
@@ -271,7 +311,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 		return fmt.Errorf("failed to create uploader: %w", err)
 	}
 
-	err = uploader.UploadFile(mergedPath, cfg.Output.Key)
+	err = uploader.UploadFile(finalPath, cfg.Output.Key)
 	stages = appendStage(stages, "post", "", postStart, err)
 	if err != nil {
 		logStages(stages)
