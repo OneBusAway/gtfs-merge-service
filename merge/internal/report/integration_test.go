@@ -33,12 +33,12 @@ import (
 //	GTFS_TRANSFORMER_CLI_JAR=/path/to/transformer-cli.jar \
 //	go test -tags integration ./internal/report/... -run TestIntegrationFullPipeline -v
 //
-// IMPORTANT: as of this writing, the officially released
-// onebusaway-gtfs-merge-cli (including the 11.2.2 build the Dockerfile
-// downloads) does NOT support --duplicateRenaming at all — that flag was
-// only just added, unreleased, in gtfs-modules (see
+// IMPORTANT: the officially released onebusaway-gtfs-merge-cli (e.g. 11.2.2)
+// does NOT support --duplicateRenaming at all — that flag was only just
+// added, unreleased, in gtfs-modules (see
 // GtfsMergerMain.java/AbstractIdentifiableSingleEntityMergeStrategy.java's
-// git history). A merge-cli.jar built from that source (or a future
+// git history). The Dockerfile now builds the flag-bearing JAR from source
+// at a pinned SHA; a merge-cli.jar built from that source (or a future
 // release containing it) is required for this test — and for
 // mergeSettings.files[...].renaming to work at all in production; see the
 // note added to docs/config-schema.md.
