@@ -349,9 +349,10 @@ func (a *ZipAnalysis) parseCalendarDates(zi *zipIndex, calendarServiceIDs map[st
 
 // parseStops populates Counts.Stops, BBox, and SampleIDs.StopID from
 // stops.txt. Rows with a blank/unparseable lat or lon are skipped for
-// bbox purposes; when a location_type column is present, generic-node and
-// boundary rows (location_type 3 or 4) are also excluded from the bbox,
-// since those aren't necessarily point-like physical stops. If
+// bbox purposes; when a location_type column is present, rows with
+// location_type >= 3 (generic node, boarding area, and any future values)
+// are also excluded from the bbox, since those aren't necessarily
+// point-like physical stops. If
 // location_type is absent (or unparseable), every row with valid
 // coordinates is simply included — see the milestone's bbox rule.
 func (a *ZipAnalysis) parseStops(zi *zipIndex) error {

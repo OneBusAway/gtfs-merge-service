@@ -3,6 +3,7 @@ package merge
 import (
 	"bytes"
 	"strings"
+	"sync"
 )
 
 // DroppedDuplicatesLimit caps how many "duplicate entity:" lines
@@ -31,7 +32,15 @@ const duplicateEntityMarker = "duplicate entity:"
 // Write never errors: it always reports (len(p), nil), matching the "sink"
 // contract expected of an io.MultiWriter fan-out target, so a bug here can
 // never affect the live stdout/stderr streaming that Merger.run also does.
+//
+// Merger.run passes the same *duplicateLineCapture as both extraStdout and
+// extraStderr to javacmd.Run, which wraps each in its own io.MultiWriter;
+// os/exec then copies the child process's stdout and stderr concurrently
+// from two separate goroutines, so Write, Lines, and reset can all be
+// called concurrently from different goroutines in practice. mu guards
+// every field access to make that safe.
 type duplicateLineCapture struct {
+	mu        sync.Mutex
 	partial   bytes.Buffer // an incomplete line carried over between Write calls
 	retained  []string
 	truncated bool
@@ -42,6 +51,9 @@ type duplicateLineCapture struct {
 // filters each complete line, and buffers any trailing partial line for the
 // next call.
 func (c *duplicateLineCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	data := p
 	for {
 		idx := bytes.IndexByte(data, '\n')
@@ -85,11 +97,17 @@ func (c *duplicateLineCapture) addLine(line string) {
 // excluded — in practice the JAR's dropped-duplicate warnings are always
 // complete, newline-terminated log lines by the time the process exits.
 func (c *duplicateLineCapture) Lines() (lines string, truncated bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	return strings.Join(c.retained, "\n"), c.truncated
 }
 
 // reset clears all state, preparing the capture for a new merge run.
 func (c *duplicateLineCapture) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.partial.Reset()
 	c.retained = nil
 	c.truncated = false

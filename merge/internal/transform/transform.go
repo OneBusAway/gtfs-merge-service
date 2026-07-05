@@ -60,9 +60,9 @@ func (t *Transformer) Transform(feedID, inputPath string, rules []json.RawMessag
 	return outputPath, nil
 }
 
-// buildArgs constructs the java argv for a transform invocation, honoring
-// JAVA_OPTS the same way the merge package does (leading JVM flags, split
-// on whitespace, ahead of -jar).
+// buildArgs constructs the java argv for a transform invocation. JVM flags
+// come from javacmd.OptsArgs (JAVA_OPTS split on whitespace, ahead of -jar),
+// shared by every JAR invocation in this service.
 func (t *Transformer) buildArgs(rulesPath, inputPath, outputPath string) []string {
 	args := javacmd.OptsArgs()
 	args = append(args, "-jar", t.jarPath, fmt.Sprintf("--transform=%s", rulesPath), inputPath, outputPath)

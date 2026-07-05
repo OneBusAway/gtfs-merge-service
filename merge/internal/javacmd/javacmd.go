@@ -52,10 +52,16 @@ func Run(label string, args []string, extraStdout, extraStderr io.Writer) error 
 
 // VerifyOutputExists checks that outputPath exists (was written by the java
 // invocation Run just ran), returning an error of the form "<label> output
-// file not created: <outputPath>" if not, or nil if it does.
+// file not created: <outputPath>" if it doesn't, or nil if it does. Any
+// other Stat failure (e.g. a permissions or IO error) also fails
+// verification, with a distinct message, rather than silently passing and
+// deferring a confusing failure to whatever reads outputPath next.
 func VerifyOutputExists(label, outputPath string) error {
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		return fmt.Errorf("%s output file not created: %s", label, outputPath)
+	if _, err := os.Stat(outputPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%s output file not created: %s", label, outputPath)
+		}
+		return fmt.Errorf("%s output file could not be verified: %w", label, err)
 	}
 	return nil
 }

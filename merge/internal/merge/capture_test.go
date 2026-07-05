@@ -3,6 +3,7 @@ package merge
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -132,6 +133,47 @@ func TestDuplicateLineCaptureEmptyWhenNothingWritten(t *testing.T) {
 	lines, truncated := c.Lines()
 	if lines != "" || truncated {
 		t.Errorf("Lines() = (%q, %v), want (\"\", false)", lines, truncated)
+	}
+}
+
+// TestDuplicateLineCaptureConcurrentWritesAreRace safe reproduces the real
+// shape of the data race this capture is exposed to: Merger.run passes the
+// same *duplicateLineCapture as both extraStdout and extraStderr to
+// javacmd.Run, which os/exec then copies into from two separate goroutines
+// (one for the child's stdout, one for its stderr) concurrently. Without
+// duplicateLineCapture's mutex, `go test -race` flags this as a data race
+// on the shared bytes.Buffer/slice fields; with it, the two goroutines'
+// writes are serialized and every "duplicate entity:" line from both
+// streams is retained.
+func TestDuplicateLineCaptureConcurrentWritesAreRaceSafe(t *testing.T) {
+	var c duplicateLineCapture
+
+	const linesPerGoroutine = 200
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	writeLines := func(label string) {
+		defer wg.Done()
+		for i := 0; i < linesPerGoroutine; i++ {
+			line := fmt.Sprintf("duplicate entity: type=class org.onebusaway.gtfs.model.Stop id=%s_%d\n", label, i)
+			if _, err := c.Write([]byte(line)); err != nil {
+				t.Errorf("Write() error = %v", err)
+				return
+			}
+		}
+	}
+
+	go writeLines("stdout")
+	go writeLines("stderr")
+	wg.Wait()
+
+	lines, truncated := c.Lines()
+	if truncated {
+		t.Errorf("truncated = true, want false")
+	}
+	got := strings.Split(lines, "\n")
+	if len(got) != 2*linesPerGoroutine {
+		t.Errorf("len(retained lines) = %d, want %d (concurrent writes from both streams must both be captured)", len(got), 2*linesPerGoroutine)
 	}
 }
 

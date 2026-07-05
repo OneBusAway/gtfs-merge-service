@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/onebusaway/gtfs-merge-service/internal/config"
@@ -256,6 +257,23 @@ func TestCombinedRules(t *testing.T) {
 
 	if got := combinedRules(nil, nil); len(got) != 0 {
 		t.Errorf("combinedRules(nil, nil) = %v, want empty", got)
+	}
+}
+
+// TestGenerateAndUploadReportRecoversPanic exercises generateAndUploadReport's
+// recover contract: a nil cfg makes report.Generate panic on the very first
+// line (len(in.Config.Feeds) on a nil *config.ConfigV2), which
+// generateAndUploadReport's deferred recover must turn into a plain error
+// containing "panic" rather than letting it crash the process — per its own
+// doc comment, report generation must never be fatal to an otherwise
+// successful merge run.
+func TestGenerateAndUploadReportRecoversPanic(t *testing.T) {
+	err := generateAndUploadReport(nil, nil, "", "", false, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error from the recovered panic, got nil")
+	}
+	if !strings.Contains(err.Error(), "panic") {
+		t.Errorf("error = %q, want it to mention a panic", err.Error())
 	}
 }
 

@@ -55,8 +55,8 @@ func (p *PairMerger) Merge(feedID, currentPath, upcomingPath string) (string, er
 	return outputPath, nil
 }
 
-// buildArgs constructs the java argv for a pair-merge invocation, honoring
-// JAVA_OPTS the same way the merge package does. No --file/
+// buildArgs constructs the java argv for a pair-merge invocation (JVM flags
+// come from the shared javacmd.OptsArgs). No --file/
 // --duplicateDetection/--duplicateRenaming flags are ever added here — this
 // pre-merge always uses the JAR's defaults.
 func (p *PairMerger) buildArgs(currentPath, upcomingPath, outputPath string) []string {

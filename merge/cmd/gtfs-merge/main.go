@@ -140,7 +140,8 @@ func pairMergeFeeds(cfg *config.ConfigV2, downloader *download.Downloader, pairM
 		}
 
 		start := time.Now()
-		upcomingPath, err := downloader.DownloadFile(feed.PairedWith.URL, fmt.Sprintf("feed_%s_upcoming.zip", feed.ID))
+		upcomingPath, downloadErr := downloader.DownloadFile(feed.PairedWith.URL, fmt.Sprintf("feed_%s_upcoming.zip", feed.ID))
+		err := downloadErr
 		if err == nil {
 			var pairedPath string
 			pairedPath, err = pairMerger.Merge(feed.ID, feedPaths[feed.ID], upcomingPath)
@@ -150,6 +151,9 @@ func pairMergeFeeds(cfg *config.ConfigV2, downloader *download.Downloader, pairM
 		}
 		stages = appendStage(stages, report.StageKeyPair, feed.ID, start, err)
 		if err != nil {
+			if downloadErr != nil {
+				return nil, stages, fmt.Errorf("failed to download upcoming signup for feed %s: %w", feed.ID, downloadErr)
+			}
 			return nil, stages, fmt.Errorf("failed to pair-merge feed %s: %w", feed.ID, err)
 		}
 	}

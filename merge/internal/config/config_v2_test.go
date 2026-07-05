@@ -366,6 +366,33 @@ func TestVersionSniffing(t *testing.T) {
 			}`,
 			expectVersion: 2,
 		},
+		{
+			// isConfigV2's probe struct declares Version as an int; a JSON
+			// string value is a type mismatch that makes the probe's
+			// Unmarshal fail, so isConfigV2 falls back to false (v1) — same
+			// as an entirely missing/invalid version key. Pinning this
+			// current fall-back behavior since it's easy to accidentally
+			// change if isConfigV2's probe type were ever loosened.
+			name: `version as a JSON string ("2") falls back to v1`,
+			configContent: `{
+				"version": "2",
+				"feeds": ["https://example.com/feed1.zip"],
+				"outputName": "merged.zip"
+			}`,
+			expectVersion: 1,
+		},
+		{
+			// A well-typed but unsupported version number is also treated
+			// as v1, not rejected outright — matching today's behavior for
+			// any non-2 version.
+			name: "version 3 (unsupported) falls back to v1",
+			configContent: `{
+				"version": 3,
+				"feeds": ["https://example.com/feed1.zip"],
+				"outputName": "merged.zip"
+			}`,
+			expectVersion: 1,
+		},
 	}
 
 	for _, tt := range tests {

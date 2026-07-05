@@ -18,8 +18,10 @@ import (
 // already-downloaded replacement content — and writes the result to
 // outputPath. Every other entry in mergedZipPath is copied through
 // unchanged. additionalFiles is applied in sorted filename order, so the
-// output zip's entry order is deterministic across runs.
-func Inject(mergedZipPath string, additionalFiles map[string]string, outputPath string) error {
+// output zip's entry order is deterministic across runs. A failure to close
+// the underlying output file also fails Inject (surfaced via the named
+// return), not just a failure to close the zip.Writer itself.
+func Inject(mergedZipPath string, additionalFiles map[string]string, outputPath string) (err error) {
 	reader, err := zip.OpenReader(mergedZipPath)
 	if err != nil {
 		return fmt.Errorf("failed to open merged zip: %w", err)
@@ -32,8 +34,14 @@ func Inject(mergedZipPath string, additionalFiles map[string]string, outputPath 
 	if err != nil {
 		return fmt.Errorf("failed to create output zip: %w", err)
 	}
+	// Surface a failure to close the underlying output file (e.g. a
+	// deferred write error, or the disk filling up) rather than discarding
+	// it — but only if nothing earlier already failed, so the first,
+	// more-specific error always wins.
 	defer func() {
-		_ = out.Close()
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("failed to close output zip: %w", cerr)
+		}
 	}()
 
 	zw := zip.NewWriter(out)

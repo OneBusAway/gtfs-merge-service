@@ -134,26 +134,12 @@ func scanIDColumn(zi *zipIndex, filename, column string, fn func(id string)) err
 	return nil
 }
 
-// computeOutputIDFacts streams the output zip's stops.txt/routes.txt/
+// computeOutputIDFactsIndexed streams the output zip's stops.txt/routes.txt/
 // trips.txt once, building both the full stop_id/route_id/trip_id sets
 // (for sampleIdMappings existence checks) and the prefixHistogram bucket
 // counts (over stop_id + route_id + trip_id combined, per
-// docs/config-schema.md §3.1) in a single pass.
-func computeOutputIDFacts(outputZipPath string, feeds []config.FeedV2) (*idSets, []PrefixHistogramEntry, error) {
-	r, err := zip.OpenReader(outputZipPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open output zip %s: %w", outputZipPath, err)
-	}
-	defer func() {
-		_ = r.Close()
-	}()
-
-	return computeOutputIDFactsIndexed(indexZip(&r.Reader), feeds)
-}
-
-// computeOutputIDFactsIndexed is computeOutputIDFacts's indexed-reader
-// variant (see analyzeZipIndexed's doc comment for why report.Generate uses
-// this instead).
+// docs/config-schema.md §3.1) in a single pass over report.Generate's shared
+// zip index (see analyzeZipIndexed's doc comment).
 func computeOutputIDFactsIndexed(zi *zipIndex, feeds []config.FeedV2) (*idSets, []PrefixHistogramEntry, error) {
 	buckets := buildPrefixBuckets(feeds)
 	counts := make([]int, len(buckets))
