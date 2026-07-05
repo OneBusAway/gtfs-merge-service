@@ -80,6 +80,36 @@ func (m *Manifest) JSON() ([]byte, error) {
 	return json.MarshalIndent(m, "", "  ")
 }
 
+// ObjectUploader is the slice of upload.Uploader this package needs;
+// narrowed to an interface so tests can record calls without S3.
+type ObjectUploader interface {
+	UploadFile(filePath, key string) error
+	UploadBytes(data []byte, key, contentType string) error
+}
+
+// Upload pushes each prepared feed zip to its configured key (cfg.Feeds
+// order), then the manifest to output.bundleInputsKey. The manifest goes
+// last so it never references an object that failed to upload; the first
+// error aborts. Callers treat any error as fatal to the run — a published
+// build with missing bundle inputs would strand the app service.
+func Upload(u ObjectUploader, cfg *config.ConfigV2, preparedPaths map[string]string, m *Manifest) error {
+	for _, feed := range cfg.Feeds {
+		key := cfg.Output.FeedKeys[feed.ID]
+		if err := u.UploadFile(preparedPaths[feed.ID], key); err != nil {
+			return fmt.Errorf("uploading prepared zip for feed '%s' to %s: %w", feed.ID, key, err)
+		}
+	}
+
+	data, err := m.JSON()
+	if err != nil {
+		return fmt.Errorf("marshaling bundle-inputs manifest: %w", err)
+	}
+	if err := u.UploadBytes(data, cfg.Output.BundleInputsKey, "application/json"); err != nil {
+		return fmt.Errorf("uploading bundle-inputs manifest to %s: %w", cfg.Output.BundleInputsKey, err)
+	}
+	return nil
+}
+
 func fileSizeAndSHA256(path string) (int64, string, error) {
 	f, err := os.Open(path)
 	if err != nil {

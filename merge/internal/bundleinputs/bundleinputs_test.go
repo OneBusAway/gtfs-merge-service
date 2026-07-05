@@ -1,6 +1,7 @@
 package bundleinputs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -105,5 +106,86 @@ func TestBuildUnreadablePreparedFile(t *testing.T) {
 
 	if _, err := Build(cfg, prepared, fakeObjectURL); err == nil {
 		t.Fatal("Build() = nil error, want error for unreadable prepared file")
+	}
+}
+
+// recordingUploader records calls; failKey makes the named key fail, for
+// asserting abort-on-first-error.
+type recordingUploader struct {
+	fileCalls  []string // "key<-path"
+	bytesCalls []string // "key:contentType:len"
+	failKey    string
+}
+
+func (r *recordingUploader) UploadFile(filePath, key string) error {
+	if key == r.failKey {
+		return fmt.Errorf("boom: %s", key)
+	}
+	r.fileCalls = append(r.fileCalls, key+"<-"+filepath.Base(filePath))
+	return nil
+}
+
+func (r *recordingUploader) UploadBytes(data []byte, key, contentType string) error {
+	if key == r.failKey {
+		return fmt.Errorf("boom: %s", key)
+	}
+	r.bytesCalls = append(r.bytesCalls, fmt.Sprintf("%s:%s:%d", key, contentType, len(data)))
+	return nil
+}
+
+// TestUpload asserts every prepared zip uploads to its configured key in
+// cfg.Feeds order, then the manifest JSON lands at bundleInputsKey as
+// application/json.
+func TestUpload(t *testing.T) {
+	cfg, prepared := buildInput(t)
+	m, err := Build(cfg, prepared, fakeObjectURL)
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	rec := &recordingUploader{}
+	if err := Upload(rec, cfg, prepared, m); err != nil {
+		t.Fatalf("Upload() error: %v", err)
+	}
+
+	wantFiles := []string{
+		"builds/49/feeds/metro.zip<-metro_prepared.zip",
+		"builds/49/feeds/st.zip<-st_prepared.zip",
+	}
+	if len(rec.fileCalls) != len(wantFiles) {
+		t.Fatalf("fileCalls = %v, want %v", rec.fileCalls, wantFiles)
+	}
+	for i := range wantFiles {
+		if rec.fileCalls[i] != wantFiles[i] {
+			t.Errorf("fileCalls[%d] = %q, want %q", i, rec.fileCalls[i], wantFiles[i])
+		}
+	}
+
+	manifestJSON, err := m.JSON()
+	if err != nil {
+		t.Fatalf("JSON() error: %v", err)
+	}
+	wantBytes := fmt.Sprintf("builds/49/bundle-inputs.json:application/json:%d", len(manifestJSON))
+	if len(rec.bytesCalls) != 1 || rec.bytesCalls[0] != wantBytes {
+		t.Errorf("bytesCalls = %v, want [%s]", rec.bytesCalls, wantBytes)
+	}
+}
+
+// TestUploadAbortsOnFirstError pins that a feed-zip failure prevents the
+// manifest upload (no manifest pointing at missing zips).
+func TestUploadAbortsOnFirstError(t *testing.T) {
+	cfg, prepared := buildInput(t)
+	m, err := Build(cfg, prepared, fakeObjectURL)
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	rec := &recordingUploader{failKey: "builds/49/feeds/metro.zip"}
+	err = Upload(rec, cfg, prepared, m)
+	if err == nil {
+		t.Fatal("Upload() = nil error, want failure")
+	}
+	if len(rec.bytesCalls) != 0 {
+		t.Errorf("manifest uploaded despite feed failure: %v", rec.bytesCalls)
 	}
 }
