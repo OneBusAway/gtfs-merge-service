@@ -25,8 +25,12 @@ type EnvConfig struct {
 	AllowedDomains     []string
 }
 
-// LoadConfigFromURL loads configuration from a URL
-func LoadConfigFromURL(configURL string, allowedDomains []string) (*Config, error) {
+// fetchConfigBytes validates configURL against allowedDomains, downloads it
+// with a bounded-timeout HTTP client, and returns its raw response body.
+// Shared by LoadConfigFromURL (v1) and LoadNormalizedConfigFromURL (v1/v2
+// sniffing, in config_v2.go) so the client timeouts, status check, and
+// body-read behavior can't drift between the two entry points.
+func fetchConfigBytes(configURL string, allowedDomains []string) ([]byte, error) {
 	// Validate URL format and domain
 	if err := validateURL(configURL, allowedDomains); err != nil {
 		return nil, fmt.Errorf("invalid config URL: %w", err)
@@ -56,6 +60,16 @@ func LoadConfigFromURL(configURL string, allowedDomains []string) (*Config, erro
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	return body, nil
+}
+
+// LoadConfigFromURL loads configuration from a URL
+func LoadConfigFromURL(configURL string, allowedDomains []string) (*Config, error) {
+	body, err := fetchConfigBytes(configURL, allowedDomains)
+	if err != nil {
+		return nil, err
 	}
 
 	var cfg Config

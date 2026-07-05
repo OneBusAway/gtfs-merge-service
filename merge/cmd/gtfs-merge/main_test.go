@@ -1,11 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/onebusaway/gtfs-merge-service/internal/config"
+	"github.com/onebusaway/gtfs-merge-service/internal/download"
 )
 
 func TestLoadConfiguration(t *testing.T) {
@@ -101,7 +105,7 @@ func TestLoadConfiguration(t *testing.T) {
 				configPath = actualPath
 			}
 
-			cfg, err := loadConfiguration(tt.configURL, configPath, tt.allowedDomains)
+			normalized, err := loadConfiguration(tt.configURL, configPath, tt.allowedDomains)
 
 			if tt.expectError {
 				if err == nil {
@@ -111,8 +115,8 @@ func TestLoadConfiguration(t *testing.T) {
 				if err != nil {
 					t.Errorf("Unexpected error: %v", err)
 				}
-				if cfg != nil && len(cfg.Feeds) != tt.expectedFeeds {
-					t.Errorf("Expected %d feeds, got %d", tt.expectedFeeds, len(cfg.Feeds))
+				if normalized != nil && normalized.V1 != nil && len(normalized.V1.Feeds) != tt.expectedFeeds {
+					t.Errorf("Expected %d feeds, got %d", tt.expectedFeeds, len(normalized.V1.Feeds))
 				}
 			}
 		})
@@ -167,5 +171,124 @@ func TestDownloadFeeds(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadConfigurationV2(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "v2-config.json")
+	configContent := `{
+		"version": 2,
+		"output": {"key": "out/gtfs.zip", "reportKey": "out/report.json"},
+		"feeds": [
+			{"id": "everett", "url": "https://example.com/everett.zip"},
+			{"id": "sound-transit", "url": "https://example.com/sound-transit.zip"}
+		]
+	}`
+	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	normalized, err := loadConfiguration("", configFile, []string{"example.com"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !normalized.IsV2() {
+		t.Fatalf("expected version 2, got %d", normalized.Version)
+	}
+	if normalized.V2 == nil || len(normalized.V2.Feeds) != 2 {
+		t.Fatalf("expected 2 v2 feeds, got %+v", normalized.V2)
+	}
+}
+
+func TestFindJar(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	primary := filepath.Join(tmpDir, "primary.jar")
+	if err := os.WriteFile(primary, []byte("jar"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("primary path exists", func(t *testing.T) {
+		got, err := findJar(primary, "does-not-exist.jar")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != primary {
+			t.Errorf("findJar() = %q, want %q", got, primary)
+		}
+	})
+
+	t.Run("falls back when primary is missing", func(t *testing.T) {
+		fallback := filepath.Join(tmpDir, "fallback.jar")
+		if err := os.WriteFile(fallback, []byte("jar"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := findJar(filepath.Join(tmpDir, "missing.jar"), fallback)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != fallback {
+			t.Errorf("findJar() = %q, want %q", got, fallback)
+		}
+	})
+
+	t.Run("errors when neither path exists", func(t *testing.T) {
+		_, err := findJar(filepath.Join(tmpDir, "missing.jar"), filepath.Join(tmpDir, "also-missing.jar"))
+		if err == nil {
+			t.Error("expected error, got none")
+		}
+	})
+}
+
+func TestCombinedRules(t *testing.T) {
+	shared := []json.RawMessage{json.RawMessage(`{"op":"remove_unused_routes"}`)}
+	own := []json.RawMessage{json.RawMessage(`{"op":"remove_current_service"}`)}
+
+	got := combinedRules(shared, own)
+	want := []json.RawMessage{
+		json.RawMessage(`{"op":"remove_unused_routes"}`),
+		json.RawMessage(`{"op":"remove_current_service"}`),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("combinedRules() = %v, want %v (shared rules must come first)", got, want)
+	}
+
+	if got := combinedRules(nil, nil); len(got) != 0 {
+		t.Errorf("combinedRules(nil, nil) = %v, want empty", got)
+	}
+}
+
+// TestGenerateAndUploadReportRecoversPanic exercises generateAndUploadReport's
+// recover contract: a nil cfg makes report.Generate panic on the very first
+// line (len(in.Config.Feeds) on a nil *config.ConfigV2), which
+// generateAndUploadReport's deferred recover must turn into a plain error
+// containing "panic" rather than letting it crash the process — per its own
+// doc comment, report generation must never be fatal to an otherwise
+// successful merge run.
+func TestGenerateAndUploadReportRecoversPanic(t *testing.T) {
+	err := generateAndUploadReport(nil, nil, "", "", false, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error from the recovered panic, got nil")
+	}
+	if !strings.Contains(err.Error(), "panic") {
+		t.Errorf("error = %q, want it to mention a panic", err.Error())
+	}
+}
+
+func TestInjectAdditionalFilesNoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	downloader := download.New(tmpDir)
+
+	cfg := &config.ConfigV2{}
+	mergedPath := filepath.Join(tmpDir, "gtfs.zip")
+
+	got, err := injectAdditionalFiles(cfg, downloader, mergedPath, tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != mergedPath {
+		t.Errorf("injectAdditionalFiles() = %q, want unchanged mergedPath %q", got, mergedPath)
 	}
 }

@@ -90,6 +90,24 @@ func (d *Downloader) DownloadFeeds(feedURLs []string) ([]string, error) {
 	return downloadedFiles, nil
 }
 
+// DownloadFile downloads url to filename within the downloader's tempDir
+// and returns the local path. Unlike DownloadFeeds (which names files
+// feed_<index>.zip for a batch of v1 feed URLs), callers choose the local
+// filename here — used by the v2 pipeline for feed-ID-keyed downloads,
+// paired ("upcoming") signups, and additional files.
+func (d *Downloader) DownloadFile(url, filename string) (string, error) {
+	if err := os.MkdirAll(d.tempDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+
+	filePath := filepath.Join(d.tempDir, filename)
+	if err := d.downloadFile(url, filePath); err != nil {
+		return "", fmt.Errorf("failed to download %s: %w", url, err)
+	}
+
+	return filePath, nil
+}
+
 func (d *Downloader) downloadFile(url, filepath string) error {
 	resp, err := d.httpClient.Get(url)
 	if err != nil {
