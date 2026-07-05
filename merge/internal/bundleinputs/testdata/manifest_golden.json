@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "feeds": [
+    {
+      "id": "metro",
+      "name": "King County Metro",
+      "defaultAgencyId": "1",
+      "key": "builds/49/feeds/metro.zip",
+      "url": "https://r2.example.com/bucket/builds/49/feeds/metro.zip",
+      "byteSize": 11,
+      "sha256": "9e681fca54a877640ba0a559719a67909e2a0d5c88f9df67faee848ee5641af6"
+    },
+    {
+      "id": "st",
+      "name": "Sound Transit",
+      "defaultAgencyId": "40",
+      "key": "builds/49/feeds/st.zip",
+      "url": "https://r2.example.com/bucket/builds/49/feeds/st.zip",
+      "byteSize": 8,
+      "sha256": "61e83a83f5ff0da2972895f8c696e12e8f288eb170f3c3b6da4a6e262ade1a6d"
+    }
+  ]
+}
