@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -81,6 +82,13 @@ func (u *Uploader) UploadFile(filePath, key string) error {
 func (u *Uploader) UploadBytes(data []byte, key, contentType string) error {
 	fmt.Printf("Uploading %d bytes to s3://%s/%s\n", len(data), u.bucket, key)
 	return u.upload(bytes.NewReader(data), int64(len(data)), key, contentType)
+}
+
+// ObjectURL returns the path-style URL of an object in this uploader's
+// bucket (endpoint/bucket/key) — the same addressing shape upload() PUTs to.
+// Used for the per-build URLs in bundle-inputs.json.
+func (u *Uploader) ObjectURL(key string) string {
+	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(u.endpoint, "/"), u.bucket, key)
 }
 
 func (u *Uploader) upload(body io.Reader, size int64, key, contentType string) error {
