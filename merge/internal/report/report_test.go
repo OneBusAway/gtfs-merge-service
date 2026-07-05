@@ -340,3 +340,14 @@ func TestGenerateFoldsInputAnalysisFailureIntoWarnings(t *testing.T) {
 		t.Errorf("Inputs[0].FeedID = %q, want \"everett\"", rpt.Inputs[0].FeedID)
 	}
 }
+
+// StageKeyBundleInputs must exist and pass through to report.json unchanged
+// (unlike download, which maps to "watch").
+func TestStageKeyBundleInputsPassthrough(t *testing.T) {
+	if StageKeyBundleInputs != "bundleInputs" {
+		t.Errorf("StageKeyBundleInputs = %q, want %q", StageKeyBundleInputs, "bundleInputs")
+	}
+	if got := stageKeyToReport[StageKeyBundleInputs]; got != "bundleInputs" {
+		t.Errorf("stageKeyToReport[%q] = %q, want %q", StageKeyBundleInputs, got, "bundleInputs")
+	}
+}

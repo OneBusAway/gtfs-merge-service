@@ -30,13 +30,14 @@ type StageInput struct {
 // main.go's internal name for the download stage; report.json documents it
 // as StageKeyWatch instead (see stageKeyToReport).
 const (
-	StageKeyDownload = "download"
-	StageKeyPair     = "pair"
-	StageKeyPrepare  = "prepare"
-	StageKeyCombine  = "combine"
-	StageKeyPost     = "post"
-	StageKeyReport   = "report"
-	StageKeyWatch    = "watch"
+	StageKeyDownload     = "download"
+	StageKeyPair         = "pair"
+	StageKeyPrepare      = "prepare"
+	StageKeyCombine      = "combine"
+	StageKeyPost         = "post"
+	StageKeyReport       = "report"
+	StageKeyWatch        = "watch"
+	StageKeyBundleInputs = "bundleInputs"
 )
 
 // stageKeyToReport maps main.go's internal stage keys to report.json's
@@ -44,11 +45,12 @@ const (
 // StageKeyDownload differs (-> StageKeyWatch); every other key passes
 // through unchanged.
 var stageKeyToReport = map[string]string{
-	StageKeyDownload: StageKeyWatch,
-	StageKeyPair:     StageKeyPair,
-	StageKeyPrepare:  StageKeyPrepare,
-	StageKeyCombine:  StageKeyCombine,
-	StageKeyPost:     StageKeyPost,
+	StageKeyDownload:     StageKeyWatch,
+	StageKeyPair:         StageKeyPair,
+	StageKeyPrepare:      StageKeyPrepare,
+	StageKeyCombine:      StageKeyCombine,
+	StageKeyPost:         StageKeyPost,
+	StageKeyBundleInputs: StageKeyBundleInputs,
 }
 
 // GenerateInput is everything Generate needs to build a report.json for one
