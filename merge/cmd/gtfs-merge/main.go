@@ -104,6 +104,14 @@ func logStages(stages []StageResult) {
 	}
 }
 
+// abortRun logs stages' timings and returns err unchanged, letting runV2's
+// failure paths do `return abortRun(stages, err)` instead of repeating
+// logStages(stages) followed by a return at every early exit.
+func abortRun(stages []StageResult, err error) error {
+	logStages(stages)
+	return err
+}
+
 // downloadV2Feeds downloads each feed's primary URL, keyed by feed ID.
 // Feeds are downloaded in cfg.Feeds order (sequentially, so that order is
 // trivially preserved regardless of map iteration later).
@@ -140,7 +148,7 @@ func pairMergeFeeds(cfg *config.ConfigV2, downloader *download.Downloader, pairM
 				feedPaths[feed.ID] = pairedPath
 			}
 		}
-		stages = appendStage(stages, "pair", feed.ID, start, err)
+		stages = appendStage(stages, report.StageKeyPair, feed.ID, start, err)
 		if err != nil {
 			return nil, stages, fmt.Errorf("failed to pair-merge feed %s: %w", feed.ID, err)
 		}
@@ -165,7 +173,7 @@ func prepareFeeds(cfg *config.ConfigV2, transformer *transform.Transformer, feed
 		start := time.Now()
 		rules := combinedRules(cfg.SharedTransformRules, feed.TransformRules)
 		outPath, err := transformer.Transform(feed.ID, feedPaths[feed.ID], rules)
-		stages = appendStage(stages, "prepare", feed.ID, start, err)
+		stages = appendStage(stages, report.StageKeyPrepare, feed.ID, start, err)
 		if err != nil {
 			return nil, stages, fmt.Errorf("failed to prepare feed %s: %w", feed.ID, err)
 		}
@@ -282,10 +290,9 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	fmt.Println("\nStep 3: Downloading GTFS feeds...")
 	start := time.Now()
 	feedPaths, err := downloadV2Feeds(cfg, downloader)
-	stages = appendStage(stages, "download", "", start, err)
+	stages = appendStage(stages, report.StageKeyDownload, "", start, err)
 	if err != nil {
-		logStages(stages)
-		return fmt.Errorf("failed to download feeds: %w", err)
+		return abortRun(stages, fmt.Errorf("failed to download feeds: %w", err))
 	}
 	fmt.Printf("✓ Downloaded %d feeds\n", len(feedPaths))
 
@@ -293,8 +300,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	pairMerger := pairmerge.New(mergeJarPath, tempDir)
 	feedPaths, stages, err = pairMergeFeeds(cfg, downloader, pairMerger, feedPaths, stages)
 	if err != nil {
-		logStages(stages)
-		return err
+		return abortRun(stages, err)
 	}
 	fmt.Println("✓ Pair-merges complete")
 
@@ -302,8 +308,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	transformer := transform.New(transformerJarPath, tempDir)
 	preparedPaths, stages, err := prepareFeeds(cfg, transformer, feedPaths, stages)
 	if err != nil {
-		logStages(stages)
-		return err
+		return abortRun(stages, err)
 	}
 	fmt.Println("✓ Feeds prepared")
 
@@ -311,10 +316,9 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	combineStart := time.Now()
 	merger := merge.New(mergeJarPath, tempDir)
 	mergedPath, err := combineFeeds(cfg, merger, preparedPaths, "gtfs.zip")
-	stages = appendStage(stages, "combine", "", combineStart, err)
+	stages = appendStage(stages, report.StageKeyCombine, "", combineStart, err)
 	if err != nil {
-		logStages(stages)
-		return err
+		return abortRun(stages, err)
 	}
 	fmt.Println("✓ Feeds merged successfully")
 
@@ -327,9 +331,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	fmt.Println("\nStep 7: Injecting additional files...")
 	finalPath, err := injectAdditionalFiles(cfg, downloader, mergedPath, tempDir)
 	if err != nil {
-		stages = appendStage(stages, "post", "", postStart, err)
-		logStages(stages)
-		return err
+		return abortRun(appendStage(stages, report.StageKeyPost, "", postStart, err), err)
 	}
 	fmt.Println("✓ Additional files injected")
 
@@ -337,9 +339,7 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	validator := validate.New()
 	err = validator.ValidateFeed(finalPath)
 	if err != nil {
-		stages = appendStage(stages, "post", "", postStart, err)
-		logStages(stages)
-		return fmt.Errorf("validation failed: %w", err)
+		return abortRun(appendStage(stages, report.StageKeyPost, "", postStart, err), fmt.Errorf("validation failed: %w", err))
 	}
 	fmt.Println("✓ Merged feed validated")
 
@@ -351,16 +351,13 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 		envConfig.S3Bucket,
 	)
 	if err != nil {
-		stages = appendStage(stages, "post", "", postStart, err)
-		logStages(stages)
-		return fmt.Errorf("failed to create uploader: %w", err)
+		return abortRun(appendStage(stages, report.StageKeyPost, "", postStart, err), fmt.Errorf("failed to create uploader: %w", err))
 	}
 
 	err = uploader.UploadFile(finalPath, cfg.Output.Key)
-	stages = appendStage(stages, "post", "", postStart, err)
+	stages = appendStage(stages, report.StageKeyPost, "", postStart, err)
 	if err != nil {
-		logStages(stages)
-		return fmt.Errorf("failed to upload: %w", err)
+		return abortRun(stages, fmt.Errorf("failed to upload: %w", err))
 	}
 	fmt.Println("✓ Upload complete")
 
@@ -372,10 +369,10 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 	reportStart := time.Now()
 	mergeLines, mergeLinesTruncated := merger.CapturedDuplicateLines()
 	if err := generateAndUploadReport(cfg, preparedPaths, finalPath, mergeLines, mergeLinesTruncated, stages, uploader); err != nil {
-		stages = appendStage(stages, "report", "", reportStart, err)
+		stages = appendStage(stages, report.StageKeyReport, "", reportStart, err)
 		fmt.Printf("WARNING: report.json generation failed (merge succeeded regardless): %v\n", err)
 	} else {
-		stages = appendStage(stages, "report", "", reportStart, nil)
+		stages = appendStage(stages, report.StageKeyReport, "", reportStart, nil)
 		fmt.Println("✓ report.json generated and uploaded")
 	}
 

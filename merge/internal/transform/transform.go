@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+
+	"github.com/onebusaway/gtfs-merge-service/internal/javacmd"
 )
 
 // DefaultJarPath is where the Docker image installs transformer-cli.jar.
@@ -49,18 +49,12 @@ func (t *Transformer) Transform(feedID, inputPath string, rules []json.RawMessag
 	outputPath := filepath.Join(t.tempDir, fmt.Sprintf("transformed_%s.zip", feedID))
 	args := t.buildArgs(rulesPath, inputPath, outputPath)
 
-	cmd := exec.Command("java", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	fmt.Printf("Running transform command: java %s\n", strings.Join(args, " "))
-
-	if err := cmd.Run(); err != nil {
+	if err := javacmd.Run("transform", args, nil, nil); err != nil {
 		return "", fmt.Errorf("transform failed for feed %s: %w", feedID, err)
 	}
 
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("transform output file not created: %s", outputPath)
+	if err := javacmd.VerifyOutputExists("transform", outputPath); err != nil {
+		return "", err
 	}
 
 	return outputPath, nil
@@ -70,13 +64,8 @@ func (t *Transformer) Transform(feedID, inputPath string, rules []json.RawMessag
 // JAVA_OPTS the same way the merge package does (leading JVM flags, split
 // on whitespace, ahead of -jar).
 func (t *Transformer) buildArgs(rulesPath, inputPath, outputPath string) []string {
-	var args []string
-	if javaOpts := os.Getenv("JAVA_OPTS"); javaOpts != "" {
-		args = append(args, strings.Fields(javaOpts)...)
-	}
-
+	args := javacmd.OptsArgs()
 	args = append(args, "-jar", t.jarPath, fmt.Sprintf("--transform=%s", rulesPath), inputPath, outputPath)
-
 	return args
 }
 

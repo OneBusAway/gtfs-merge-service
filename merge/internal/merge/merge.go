@@ -3,11 +3,11 @@ package merge
 import (
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
+	"maps"
 	"path/filepath"
-	"sort"
-	"strings"
+	"slices"
+
+	"github.com/onebusaway/gtfs-merge-service/internal/javacmd"
 )
 
 type Merger struct {
@@ -43,16 +43,6 @@ type FileSetting struct {
 	Renaming  string
 }
 
-// javaOptsArgs returns the leading JVM flags from the JAVA_OPTS environment
-// variable, split on whitespace, or nil if it is unset.
-func javaOptsArgs() []string {
-	javaOpts := os.Getenv("JAVA_OPTS")
-	if javaOpts == "" {
-		return nil
-	}
-	return strings.Fields(javaOpts)
-}
-
 // MergeFeeds merges feedFiles using v1 semantics: per-file duplicate
 // detection only (no renaming strategy, no global duplicate-handling flags).
 // It never captures the merge JAR's output (see run) — v1 has no
@@ -66,10 +56,10 @@ func (m *Merger) MergeFeeds(feedFiles []string, strategies map[string]string, ou
 // iterated in sorted order so the resulting command line is deterministic
 // across runs, regardless of Go's randomized map iteration order.
 func (m *Merger) buildArgs(feedFiles []string, strategies map[string]string, outputFile string) []string {
-	args := javaOptsArgs()
+	args := javacmd.OptsArgs()
 	args = append(args, "-jar", m.jarPath)
 
-	for _, file := range sortedKeys(strategies) {
+	for _, file := range slices.Sorted(maps.Keys(strategies)) {
 		args = append(args, fmt.Sprintf("--file=%s", file))
 		args = append(args, fmt.Sprintf("--duplicateDetection=%s", strategies[file]))
 	}
@@ -105,12 +95,12 @@ func (m *Merger) MergeFeedsV2(feedFiles []string, fileSettings map[string]FileSe
 // every file needs an explicit --duplicateRenaming to keep the index
 // pairing intact, using "context" for the ones left empty/unset.
 func (m *Merger) buildArgsV2(feedFiles []string, fileSettings map[string]FileSetting, duplicateHandling string, outputFile string) []string {
-	args := javaOptsArgs()
+	args := javacmd.OptsArgs()
 	args = append(args, "-jar", m.jarPath)
 
 	emitRenaming := anyFileWantsAgencyRenaming(fileSettings)
 
-	for _, file := range sortedFileSettingKeys(fileSettings) {
+	for _, file := range slices.Sorted(maps.Keys(fileSettings)) {
 		setting := fileSettings[file]
 		args = append(args, fmt.Sprintf("--file=%s", file))
 		args = append(args, fmt.Sprintf("--duplicateDetection=%s", setting.Detection))
@@ -148,24 +138,6 @@ func anyFileWantsAgencyRenaming(fileSettings map[string]FileSetting) bool {
 	return false
 }
 
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedFileSettingKeys(m map[string]FileSetting) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // run executes the java argv, always streaming stdout/stderr live to this
 // process's own stdout/stderr. When capture is true (the v2 path — see
 // MergeFeedsV2), it also tees that output through m.capture, a
@@ -174,28 +146,18 @@ func sortedFileSettingKeys(m map[string]FileSetting) []string {
 // much the JAR logs overall. capture is false on the v1 path (MergeFeeds),
 // which has no use for the captured lines at all.
 func (m *Merger) run(args []string, outputFile string, capture bool) error {
-	cmd := exec.Command("java", args...)
+	var extraStdout, extraStderr io.Writer
 	if capture {
 		m.capture.reset()
-		cmd.Stdout = io.MultiWriter(os.Stdout, &m.capture)
-		cmd.Stderr = io.MultiWriter(os.Stderr, &m.capture)
-	} else {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		extraStdout = &m.capture
+		extraStderr = &m.capture
 	}
 
-	fmt.Printf("Running merge command: java %s\n", strings.Join(args, " "))
-
-	if err := cmd.Run(); err != nil {
+	if err := javacmd.Run("merge", args, extraStdout, extraStderr); err != nil {
 		return fmt.Errorf("merge failed: %w", err)
 	}
 
-	outputPath := filepath.Join(m.tempDir, outputFile)
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		return fmt.Errorf("merge output file not created: %s", outputPath)
-	}
-
-	return nil
+	return javacmd.VerifyOutputExists("merge", filepath.Join(m.tempDir, outputFile))
 }
 
 func (m *Merger) GetOutputPath(outputFile string) string {

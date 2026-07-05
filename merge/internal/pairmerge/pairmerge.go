@@ -6,10 +6,9 @@ package pairmerge
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+
+	"github.com/onebusaway/gtfs-merge-service/internal/javacmd"
 )
 
 // PairMerger pre-merges two signups for a single feed using merge-cli.jar's
@@ -45,18 +44,12 @@ func (p *PairMerger) Merge(feedID, currentPath, upcomingPath string) (string, er
 	outputPath := filepath.Join(p.tempDir, fmt.Sprintf("paired_%s.zip", feedID))
 	args := p.buildArgs(currentPath, upcomingPath, outputPath)
 
-	cmd := exec.Command("java", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	fmt.Printf("Running pair-merge command: java %s\n", strings.Join(args, " "))
-
-	if err := cmd.Run(); err != nil {
+	if err := javacmd.Run("pair-merge", args, nil, nil); err != nil {
 		return "", fmt.Errorf("pair-merge failed for feed %s: %w", feedID, err)
 	}
 
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("pair-merge output file not created: %s", outputPath)
+	if err := javacmd.VerifyOutputExists("pair-merge", outputPath); err != nil {
+		return "", err
 	}
 
 	return outputPath, nil
@@ -67,12 +60,7 @@ func (p *PairMerger) Merge(feedID, currentPath, upcomingPath string) (string, er
 // --duplicateDetection/--duplicateRenaming flags are ever added here — this
 // pre-merge always uses the JAR's defaults.
 func (p *PairMerger) buildArgs(currentPath, upcomingPath, outputPath string) []string {
-	var args []string
-	if javaOpts := os.Getenv("JAVA_OPTS"); javaOpts != "" {
-		args = append(args, strings.Fields(javaOpts)...)
-	}
-
+	args := javacmd.OptsArgs()
 	args = append(args, "-jar", p.jarPath, currentPath, upcomingPath, outputPath)
-
 	return args
 }

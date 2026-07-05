@@ -3,12 +3,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // ConfigV2 is the v2 job configuration schema. It supports multiple named
@@ -133,9 +130,20 @@ var validDetection = map[string]bool{
 	"none":     true,
 }
 
+// Renaming strategies for mergeSettings.files[...].renaming (see
+// docs/config-schema.md §1.5). RenamingContext uses the merge JAR's
+// index-derived letter prefix convention (a-, b-, ...); RenamingAgency uses
+// the owning feed's own agency_id as a prefix. Shared with
+// internal/report's renameCounts derivation (histogram.go) so the two never
+// drift apart.
+const (
+	RenamingContext = "context"
+	RenamingAgency  = "agency"
+)
+
 var validRenaming = map[string]bool{
-	"context": true,
-	"agency":  true,
+	RenamingContext: true,
+	RenamingAgency:  true,
 }
 
 var feedIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
@@ -154,33 +162,9 @@ func isIndependentMergeFile(name string) bool {
 // LoadNormalizedConfigFromURL loads configuration from a URL, sniffing
 // whether it is a v1 or v2 config and validating it accordingly.
 func LoadNormalizedConfigFromURL(configURL string, allowedDomains []string) (*NormalizedConfig, error) {
-	if err := validateURL(configURL, allowedDomains); err != nil {
-		return nil, fmt.Errorf("invalid config URL: %w", err)
-	}
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		},
-	}
-
-	resp, err := client.Get(configURL)
+	body, err := fetchConfigBytes(configURL, allowedDomains)
 	if err != nil {
-		return nil, fmt.Errorf("failed to download config: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download config: status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config: %w", err)
+		return nil, err
 	}
 
 	return parseNormalizedConfig(body, allowedDomains)

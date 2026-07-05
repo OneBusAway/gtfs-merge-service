@@ -4,7 +4,8 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/onebusaway/gtfs-merge-service/internal/config"
@@ -146,8 +147,14 @@ func computeOutputIDFacts(outputZipPath string, feeds []config.FeedV2) (*idSets,
 	defer func() {
 		_ = r.Close()
 	}()
-	zi := indexZip(&r.Reader)
 
+	return computeOutputIDFactsIndexed(indexZip(&r.Reader), feeds)
+}
+
+// computeOutputIDFactsIndexed is computeOutputIDFacts's indexed-reader
+// variant (see analyzeZipIndexed's doc comment for why report.Generate uses
+// this instead).
+func computeOutputIDFactsIndexed(zi *zipIndex, feeds []config.FeedV2) (*idSets, []PrefixHistogramEntry, error) {
 	buckets := buildPrefixBuckets(feeds)
 	counts := make([]int, len(buckets))
 
@@ -267,9 +274,8 @@ var renameableFileIDColumn = map[string]string{
 // (highest-priority) one can have been renamed at all (see
 // docs/config-schema.md §1.3), so only their prefixes are considered.
 func deriveRenameCounts(cfg *config.ConfigV2, inputs []InputReport, outputZipPath string) (map[string]int, []string, error) {
-	counts := map[string]int{}
 	if len(cfg.MergeSettings.Files) == 0 {
-		return counts, nil, nil
+		return map[string]int{}, nil, nil
 	}
 
 	r, err := zip.OpenReader(outputZipPath)
@@ -279,10 +285,22 @@ func deriveRenameCounts(cfg *config.ConfigV2, inputs []InputReport, outputZipPat
 	defer func() {
 		_ = r.Close()
 	}()
-	zi := indexZip(&r.Reader)
+
+	return deriveRenameCountsIndexed(indexZip(&r.Reader), cfg, inputs)
+}
+
+// deriveRenameCountsIndexed is deriveRenameCounts's indexed-reader variant
+// (see analyzeZipIndexed's doc comment for why report.Generate uses this
+// instead), operating on a zipIndex the caller already opened rather than
+// opening outputZipPath itself.
+func deriveRenameCountsIndexed(zi *zipIndex, cfg *config.ConfigV2, inputs []InputReport) (map[string]int, []string, error) {
+	counts := map[string]int{}
+	if len(cfg.MergeSettings.Files) == 0 {
+		return counts, nil, nil
+	}
 
 	var warnings []string
-	for _, file := range sortedFileSettingKeys(cfg.MergeSettings.Files) {
+	for _, file := range slices.Sorted(maps.Keys(cfg.MergeSettings.Files)) {
 		setting := cfg.MergeSettings.Files[file]
 		column, ok := renameableFileIDColumn[file]
 		if !ok {
@@ -319,9 +337,9 @@ func renamePrefixesForFile(feeds []config.FeedV2, inputs []InputReport, renaming
 	var prefixes []string
 	for i := 0; i < len(feeds)-1; i++ {
 		switch renaming {
-		case "context":
+		case config.RenamingContext:
 			prefixes = append(prefixes, letterIndex(i)+"-")
-		case "agency":
+		case config.RenamingAgency:
 			for _, ag := range inputs[i].Agencies {
 				if ag.AgencyID != "" {
 					prefixes = append(prefixes, ag.AgencyID+"-")
@@ -330,13 +348,4 @@ func renamePrefixesForFile(feeds []config.FeedV2, inputs []InputReport, renaming
 		}
 	}
 	return prefixes
-}
-
-func sortedFileSettingKeys(m map[string]config.FileMergeSettingV2) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

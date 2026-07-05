@@ -1,6 +1,7 @@
 package report
 
 import (
+	"archive/zip"
 	"fmt"
 	"os"
 	"time"
@@ -21,16 +22,33 @@ type StageInput struct {
 	Duration time.Duration
 }
 
+// Stage key vocabulary shared between cmd/gtfs-merge (which annotates each
+// v2 pipeline stage via appendStage) and report.json's stages[] (see
+// stageKeyToReport and docs/config-schema.md §3.1). Defining these once here
+// (report is already imported by main, so this avoids a cmd -> internal ->
+// cmd import cycle) keeps the two from drifting apart. StageKeyDownload is
+// main.go's internal name for the download stage; report.json documents it
+// as StageKeyWatch instead (see stageKeyToReport).
+const (
+	StageKeyDownload = "download"
+	StageKeyPair     = "pair"
+	StageKeyPrepare  = "prepare"
+	StageKeyCombine  = "combine"
+	StageKeyPost     = "post"
+	StageKeyReport   = "report"
+	StageKeyWatch    = "watch"
+)
+
 // stageKeyToReport maps main.go's internal stage keys to report.json's
 // documented stage key vocabulary (docs/config-schema.md §3.1). Only
-// "download" differs (-> "watch"); every other key passes through
-// unchanged.
+// StageKeyDownload differs (-> StageKeyWatch); every other key passes
+// through unchanged.
 var stageKeyToReport = map[string]string{
-	"download": "watch",
-	"pair":     "pair",
-	"prepare":  "prepare",
-	"combine":  "combine",
-	"post":     "post",
+	StageKeyDownload: StageKeyWatch,
+	StageKeyPair:     StageKeyPair,
+	StageKeyPrepare:  StageKeyPrepare,
+	StageKeyCombine:  StageKeyCombine,
+	StageKeyPost:     StageKeyPost,
 }
 
 // GenerateInput is everything Generate needs to build a report.json for one
@@ -112,7 +130,21 @@ func Generate(in GenerateInput) (*Report, error) {
 		inputs = append(inputs, ir)
 	}
 
-	outputAnalysis, err := AnalyzeZip(in.OutputZipPath)
+	// The output zip is opened and indexed exactly once here, and the
+	// shared reader/index is passed to all three analyses below
+	// (analyzeZipIndexed, computeOutputIDFactsIndexed,
+	// deriveRenameCountsIndexed) instead of each independently re-opening
+	// and re-scanning the same zip file.
+	outputZip, err := zip.OpenReader(in.OutputZipPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to analyze output zip: %w", err)
+	}
+	defer func() {
+		_ = outputZip.Close()
+	}()
+	outputZi := indexZip(&outputZip.Reader)
+
+	outputAnalysis, err := analyzeZipIndexed(outputZi)
 	if err != nil {
 		return nil, fmt.Errorf("failed to analyze output zip: %w", err)
 	}
@@ -125,14 +157,14 @@ func Generate(in GenerateInput) (*Report, error) {
 		return nil, fmt.Errorf("failed to stat output zip: %w", err)
 	}
 
-	idSets, histogram, err := computeOutputIDFacts(in.OutputZipPath, in.Config.Feeds)
+	idSets, histogram, err := computeOutputIDFactsIndexed(outputZi, in.Config.Feeds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute output ID facts: %w", err)
 	}
 
 	mappings := computeSampleIDMappings(in.Config.Feeds, inputs, idSets)
 
-	renameCounts, renameWarnings, err := deriveRenameCounts(in.Config, inputs, in.OutputZipPath)
+	renameCounts, renameWarnings, err := deriveRenameCountsIndexed(outputZi, in.Config, inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive rename counts: %w", err)
 	}
@@ -160,7 +192,7 @@ func Generate(in GenerateInput) (*Report, error) {
 			DurationMs: s.Duration.Milliseconds(),
 		})
 	}
-	stages = append(stages, StageReport{Key: "report", Status: "ok", DurationMs: time.Since(start).Milliseconds()})
+	stages = append(stages, StageReport{Key: StageKeyReport, Status: "ok", DurationMs: time.Since(start).Milliseconds()})
 
 	if warnings == nil {
 		warnings = []string{}

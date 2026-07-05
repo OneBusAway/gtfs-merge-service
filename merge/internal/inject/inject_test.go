@@ -3,10 +3,11 @@ package inject
 import (
 	"archive/zip"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ func writeZip(t *testing.T, path string, entries map[string]string) {
 	}()
 
 	zw := zip.NewWriter(f)
-	for _, name := range sortedKeys(entries) {
+	for _, name := range slices.Sorted(maps.Keys(entries)) {
 		w, err := zw.Create(name)
 		if err != nil {
 			t.Fatalf("failed to create entry %s: %v", name, err)
@@ -155,17 +156,5 @@ func TestInjectMissingAdditionalFileSource(t *testing.T) {
 	err := Inject(mergedPath, map[string]string{"translations.txt": filepath.Join(dir, "missing.txt")}, filepath.Join(dir, "out.zip"))
 	if err == nil {
 		t.Error("expected error for missing additional file source, got none")
-	}
-}
-
-func TestSortedKeys(t *testing.T) {
-	m := map[string]string{"c": "3", "a": "1", "b": "2"}
-	got := sortedKeys(m)
-	want := []string{"a", "b", "c"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("sortedKeys() = %v, want %v", got, want)
-	}
-	if !sort.StringsAreSorted(got) {
-		t.Errorf("sortedKeys() result is not sorted: %v", got)
 	}
 }

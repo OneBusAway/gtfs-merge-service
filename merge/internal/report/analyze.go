@@ -127,8 +127,17 @@ func AnalyzeZip(zipPath string) (*ZipAnalysis, error) {
 		_ = r.Close()
 	}()
 
-	zi := indexZip(&r.Reader)
+	return analyzeZipIndexed(indexZip(&r.Reader))
+}
 
+// analyzeZipIndexed is AnalyzeZip's indexed-reader variant: it extracts the
+// same report-relevant facts, but from a zipIndex the caller has already
+// opened, rather than opening/indexing zipPath itself. report.Generate uses
+// this to share a single indexed reader over the output zip across
+// analyzeZipIndexed, computeOutputIDFactsIndexed, and
+// deriveRenameCountsIndexed, instead of opening and re-scanning the same
+// zip three separate times.
+func analyzeZipIndexed(zi *zipIndex) (*ZipAnalysis, error) {
 	a := &ZipAnalysis{
 		Files:     append([]string{}, zi.order...),
 		Agencies:  []Agency{},
@@ -422,44 +431,21 @@ func (a *ZipAnalysis) parseStops(zi *zipIndex) error {
 }
 
 func (a *ZipAnalysis) parseRoutes(zi *zipIndex) error {
-	cr, rc, found, err := zi.openCSV("routes.txt")
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-	defer func() {
-		_ = rc.Close()
-	}()
-
-	header, ok, err := readHeader(cr)
-	if err != nil {
-		return fmt.Errorf("failed to read routes.txt header: %w", err)
-	}
-	if !ok {
-		return nil
-	}
-	idIdx := colIndex(header, "route_id")
-
-	for {
-		row, err := cr.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("failed to read routes.txt: %w", err)
-		}
-		a.Counts.Routes++
-		if id := col(row, idIdx); id != "" && len(a.SampleIDs.RouteID) < maxSampleIDs {
-			a.SampleIDs.RouteID = append(a.SampleIDs.RouteID, id)
-		}
-	}
-	return nil
+	return a.parseCountedIDFile(zi, "routes.txt", "route_id", &a.Counts.Routes, &a.SampleIDs.RouteID)
 }
 
 func (a *ZipAnalysis) parseTrips(zi *zipIndex) error {
-	cr, rc, found, err := zi.openCSV("trips.txt")
+	return a.parseCountedIDFile(zi, "trips.txt", "trip_id", &a.Counts.Trips, &a.SampleIDs.TripID)
+}
+
+// parseCountedIDFile is the shared implementation behind parseRoutes and
+// parseTrips: both files count every row (regardless of whether idColumn is
+// blank on that row — unlike scanIDColumn, which skips blank IDs entirely)
+// into count, while separately sampling up to maxSampleIDs non-blank
+// idColumn values into samples. filename and idColumn are the only things
+// that differ between the two callers.
+func (a *ZipAnalysis) parseCountedIDFile(zi *zipIndex, filename, idColumn string, count *int, samples *[]string) error {
+	cr, rc, found, err := zi.openCSV(filename)
 	if err != nil {
 		return err
 	}
@@ -472,12 +458,12 @@ func (a *ZipAnalysis) parseTrips(zi *zipIndex) error {
 
 	header, ok, err := readHeader(cr)
 	if err != nil {
-		return fmt.Errorf("failed to read trips.txt header: %w", err)
+		return fmt.Errorf("failed to read %s header: %w", filename, err)
 	}
 	if !ok {
 		return nil
 	}
-	idIdx := colIndex(header, "trip_id")
+	idIdx := colIndex(header, idColumn)
 
 	for {
 		row, err := cr.Read()
@@ -485,11 +471,11 @@ func (a *ZipAnalysis) parseTrips(zi *zipIndex) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("failed to read trips.txt: %w", err)
+			return fmt.Errorf("failed to read %s: %w", filename, err)
 		}
-		a.Counts.Trips++
-		if id := col(row, idIdx); id != "" && len(a.SampleIDs.TripID) < maxSampleIDs {
-			a.SampleIDs.TripID = append(a.SampleIDs.TripID, id)
+		*count++
+		if id := col(row, idIdx); id != "" && len(*samples) < maxSampleIDs {
+			*samples = append(*samples, id)
 		}
 	}
 	return nil

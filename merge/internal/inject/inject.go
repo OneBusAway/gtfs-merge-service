@@ -8,8 +8,9 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 )
 
 // Inject reads mergedZipPath, replaces (or adds) each entry named in
@@ -47,7 +48,7 @@ func Inject(mergedZipPath string, additionalFiles map[string]string, outputPath 
 		}
 	}
 
-	for _, filename := range sortedKeys(additionalFiles) {
+	for _, filename := range slices.Sorted(maps.Keys(additionalFiles)) {
 		if err := addFileToZip(zw, filename, additionalFiles[filename]); err != nil {
 			_ = zw.Close()
 			return fmt.Errorf("failed to add %s: %w", filename, err)
@@ -105,13 +106,4 @@ func addFileToZip(zw *zip.Writer, filename, localPath string) error {
 
 	_, err = io.Copy(w, in)
 	return err
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
