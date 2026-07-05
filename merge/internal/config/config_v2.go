@@ -20,10 +20,16 @@ type ConfigV2 struct {
 	AdditionalFiles      []AdditionalFileV2 `json:"additionalFiles"`
 }
 
-// OutputV2 describes where the merged feed and its report are written.
+// OutputV2 describes where the merged feed and its report are written, and —
+// when bundle inputs are enabled — where each prepared per-feed zip and the
+// bundle-inputs.json manifest go. FeedKeys/BundleInputsKey are optional as a
+// pair: both set (bundle-inputs stage runs) or both absent (stage skipped;
+// existing configs unchanged). Rails names all keys; Go only uploads to them.
 type OutputV2 struct {
-	Key       string `json:"key"`
-	ReportKey string `json:"reportKey"`
+	Key             string            `json:"key"`
+	ReportKey       string            `json:"reportKey"`
+	FeedKeys        map[string]string `json:"feedKeys"`
+	BundleInputsKey string            `json:"bundleInputsKey"`
 }
 
 // FeedV2 describes a single input GTFS feed and how it should be prepared
@@ -35,6 +41,11 @@ type FeedV2 struct {
 	Prefix         string            `json:"prefix"`
 	TransformRules []json.RawMessage `json:"transformRules"`
 	PairedWith     *PairedFeedV2     `json:"pairedWith"`
+	// DefaultAgencyID is the OBA agency namespace this feed's stops load
+	// under when the server ingests bundle inputs (multi-zip load). Passed
+	// through verbatim into bundle-inputs.json; required for every feed when
+	// output.bundleInputsKey is set, unused otherwise.
+	DefaultAgencyID string `json:"defaultAgencyId"`
 }
 
 // PairedFeedV2 is a second signup zip that is pair-merged with the parent
@@ -306,5 +317,65 @@ func (c *ConfigV2) Validate(allowedDomains []string) error {
 		}
 	}
 
+	if err := c.validateBundleInputs(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateBundleInputs enforces the all-or-nothing bundle-inputs contract:
+// feedKeys and bundleInputsKey come as a pair, feedKeys covers exactly the
+// configured feeds, every key is non-empty/..-free/distinct (including
+// against output.key and output.reportKey), and every feed carries the
+// defaultAgencyId the manifest must publish.
+func (c *ConfigV2) validateBundleInputs() error {
+	if c.Output.BundleInputsKey == "" && len(c.Output.FeedKeys) == 0 {
+		return nil
+	}
+	if c.Output.BundleInputsKey == "" {
+		return fmt.Errorf("output.feedKeys requires output.bundleInputsKey")
+	}
+	if len(c.Output.FeedKeys) == 0 {
+		return fmt.Errorf("output.bundleInputsKey requires output.feedKeys")
+	}
+	if strings.Contains(c.Output.BundleInputsKey, "..") {
+		return fmt.Errorf("output.bundleInputsKey must not contain '..'")
+	}
+
+	seenKeys := map[string]string{
+		c.Output.Key:             "output.key",
+		c.Output.ReportKey:       "output.reportKey",
+		c.Output.BundleInputsKey: "output.bundleInputsKey",
+	}
+	if len(seenKeys) < 3 {
+		return fmt.Errorf("duplicate key among output.key/output.reportKey/output.bundleInputsKey")
+	}
+
+	feedIDs := make(map[string]bool, len(c.Feeds))
+	for _, feed := range c.Feeds {
+		feedIDs[feed.ID] = true
+		if _, ok := c.Output.FeedKeys[feed.ID]; !ok {
+			return fmt.Errorf("missing feedKeys entry for feed '%s'", feed.ID)
+		}
+		if feed.DefaultAgencyID == "" {
+			return fmt.Errorf("feed '%s' missing defaultAgencyId (required when output.bundleInputsKey is set)", feed.ID)
+		}
+	}
+	for feedID, key := range c.Output.FeedKeys {
+		if !feedIDs[feedID] {
+			return fmt.Errorf("feedKeys entry for unknown feed '%s'", feedID)
+		}
+		if key == "" {
+			return fmt.Errorf("empty feedKeys entry for feed '%s'", feedID)
+		}
+		if strings.Contains(key, "..") {
+			return fmt.Errorf("feedKeys entry for feed '%s' must not contain '..'", feedID)
+		}
+		if prior, dup := seenKeys[key]; dup {
+			return fmt.Errorf("duplicate key '%s' (also used by %s)", key, prior)
+		}
+		seenKeys[key] = fmt.Sprintf("feedKeys[%s]", feedID)
+	}
 	return nil
 }
