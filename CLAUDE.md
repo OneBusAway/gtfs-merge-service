@@ -42,9 +42,8 @@ The service consists of:
 
 2. **Dockerfile**: Multi-stage build that:
    - Builds the Go binary in an Alpine container
-   - Creates a runtime image with Java 17 JRE (for OneBusAway JAR)
-   - Downloads the OneBusAway GTFS Merge CLI JAR from Maven Central
-   - Installs AWS CLI v2 for S3 operations (supports both x86_64 and aarch64)
+   - Builds the OneBusAway merge/transformer CLI JARs from source in a Maven stage, pinned to a `gtfs-modules` SHA (see "Important Notes")
+   - Creates a runtime image with a Java 25 JRE (to run those JARs)
 
 3. **Configuration**: JSON-based configuration that specifies:
    - Input GTFS feed URLs
@@ -81,7 +80,7 @@ make test-integration # Integration tests (requires JAR)
 
 ## Important Notes
 
-- The OneBusAway JAR version is set to 9.0.1 (configurable via `JAR_VERSION` build arg)
+- The OneBusAway merge/transformer CLI JARs are built from source in a Maven builder stage of the Dockerfile, pinned to an `onebusaway-gtfs-modules` git SHA (`GTFS_MODULES_REF` build arg). This is a temporary measure until an upstream release ships the `--duplicateRenaming` flag that agency-prefix duplicate renaming needs (see issue #2); the pinned tree targets Java 25, so both the builder and runtime images use Java 25.
 - The service validates GTFS feeds before and after merging when configured
 - S3 uploads require AWS credentials via environment variables or IAM role
 - Output can be uploaded to S3-compatible storage services; requires AWS credentials set via .env
