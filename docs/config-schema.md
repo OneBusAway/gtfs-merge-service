@@ -63,6 +63,8 @@ from a pinned SHA (`f9cd94d4`, PR #471) — see the "JAR provenance" note in §3
 | `version` | int | yes | Must be `2` for this schema. Any other value (or a missing key) is parsed as the v1 schema — see Appendix. |
 | `output.key` | string | yes | Destination object key for the merged `gtfs.zip` in the output bucket. Must not contain `..`. |
 | `output.reportKey` | string | yes | Destination object key for `report.json` (see §3). Must not contain `..`. |
+| `output.feedKeys` | map\<feed_id, string\> | no — see §4 | Object key for each feed's prepared zip. |
+| `output.bundleInputsKey` | string | no — see §4 | Object key for the bundle-inputs.json manifest. |
 | `feeds` | array of Feed | yes, non-empty | Input feeds, **in merge order**. See §1.3 for merge-order semantics. |
 | `sharedTransformRules` | array of raw JSON objects | no | Transformer-native rule objects (see §2) applied, in array order, to **every** feed **before** its own `feeds[].transformRules`, and before the big merge. Passed through verbatim, one object per line, to `transformer-cli.jar`. Shared rules run first because they establish the common baseline every feed should get (e.g. dropping unused routes); each feed's own rules then run afterward to refine or override that baseline for its own specifics. |
 | `mergeSettings.duplicateHandling` | enum: `ignore` \| `log` \| `fail` | no (default `ignore`) | **Global** — applies to the whole merge run, not per file. See §1.4. |
@@ -79,6 +81,7 @@ from a pinned SHA (`f9cd94d4`, PR #471) — see the "JAR provenance" note in §3
 | `prefix` | string | no | **Informational only.** Used for report bucketing (e.g. `prefixHistogram`) — it is never passed to the merge or transform JARs. If you want IDs actually prefixed, do it with a `transformRules` `update` op (see §2.4) or via `mergeSettings.files[...].renaming`. |
 | `transformRules` | array of raw JSON objects | no | Transformer-native rule objects (§2), passed through verbatim, applied to this feed only, before the big merge. Run in array order, after `sharedTransformRules` (if any) and after `pairedWith` pre-merge (if present). |
 | `pairedWith.url` | string | no | A second signup zip for the same agency (e.g. an "upcoming" feed). If present, `pairedWith.url` is merged into `url` using **default** merge settings (JAR auto-detection, no explicit `--file`/`--duplicateDetection` flags) as a preparatory step, **before** this feed participates in the main multi-feed merge. |
+| `defaultAgencyId` | string | no — see §4 | OBA agency namespace for stops when bundle inputs are enabled. |
 
 **AdditionalFile object:**
 
