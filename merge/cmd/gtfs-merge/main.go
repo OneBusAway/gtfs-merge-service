@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/onebusaway/gtfs-merge-service/internal/bundleinputs"
 	"github.com/onebusaway/gtfs-merge-service/internal/config"
 	"github.com/onebusaway/gtfs-merge-service/internal/download"
 	"github.com/onebusaway/gtfs-merge-service/internal/inject"
@@ -364,6 +365,28 @@ func runV2(cfg *config.ConfigV2, envConfig *config.EnvConfig, tempDir string) er
 		return abortRun(stages, fmt.Errorf("failed to upload: %w", err))
 	}
 	fmt.Println("✓ Upload complete")
+
+	// Step 9b uploads the bundle inputs — the prepared per-feed zips (the
+	// same post-pair-merge, post-transform files the combine stage consumed)
+	// plus bundle-inputs.json. Skipped entirely when the config doesn't set
+	// output.bundleInputsKey (backcompat: non-OBA combined feeds pay
+	// nothing). Runs after the merged-zip upload so a bundle-inputs set
+	// never exists for a build without its merged artifact, and unlike
+	// report.json a failure here fails the run: a published build with
+	// missing inputs would strand the app service.
+	if cfg.Output.BundleInputsKey != "" {
+		fmt.Println("\nStep 9b: Uploading bundle inputs (prepared feeds + manifest)...")
+		biStart := time.Now()
+		manifest, biErr := bundleinputs.Build(cfg, preparedPaths, uploader.ObjectURL)
+		if biErr == nil {
+			biErr = bundleinputs.Upload(uploader, cfg, preparedPaths, manifest)
+		}
+		stages = appendStage(stages, report.StageKeyBundleInputs, "", biStart, biErr)
+		if biErr != nil {
+			return abortRun(stages, fmt.Errorf("failed to upload bundle inputs: %w", biErr))
+		}
+		fmt.Println("✓ Bundle inputs uploaded")
+	}
 
 	// report.json generation is intentionally excluded from the "post"
 	// stage bracket above and given its own stage entry: unlike

@@ -8,7 +8,9 @@ defines:
    CLI (`transformer-cli.jar`), pinned against the actual parser source.
 3. The `report.json` v1 schema produced by a merge run (implemented in a later
    milestone; documented here so the config and report evolve together).
-4. The legacy (v1) config schema, kept for backward compatibility.
+4. The optional bundle-inputs artifact set (`output.feedKeys` /
+   `output.bundleInputsKey`) that OBA servers ingest under multi-zip load.
+5. The legacy (v1) config schema, kept for backward compatibility.
 
 Everything in this document reflects the real behavior of
 `onebusaway-gtfs-merge-cli` and `onebusaway-gtfs-transformer-cli` as verified
@@ -61,6 +63,8 @@ from a pinned SHA (`f9cd94d4`, PR #471) — see the "JAR provenance" note in §3
 | `version` | int | yes | Must be `2` for this schema. Any other value (or a missing key) is parsed as the v1 schema — see Appendix. |
 | `output.key` | string | yes | Destination object key for the merged `gtfs.zip` in the output bucket. Must not contain `..`. |
 | `output.reportKey` | string | yes | Destination object key for `report.json` (see §3). Must not contain `..`. |
+| `output.feedKeys` | map\<feed_id, string\> | no — see §4 | Object key for each feed's prepared zip. |
+| `output.bundleInputsKey` | string | no — see §4 | Object key for the bundle-inputs.json manifest. |
 | `feeds` | array of Feed | yes, non-empty | Input feeds, **in merge order**. See §1.3 for merge-order semantics. |
 | `sharedTransformRules` | array of raw JSON objects | no | Transformer-native rule objects (see §2) applied, in array order, to **every** feed **before** its own `feeds[].transformRules`, and before the big merge. Passed through verbatim, one object per line, to `transformer-cli.jar`. Shared rules run first because they establish the common baseline every feed should get (e.g. dropping unused routes); each feed's own rules then run afterward to refine or override that baseline for its own specifics. |
 | `mergeSettings.duplicateHandling` | enum: `ignore` \| `log` \| `fail` | no (default `ignore`) | **Global** — applies to the whole merge run, not per file. See §1.4. |
@@ -77,6 +81,7 @@ from a pinned SHA (`f9cd94d4`, PR #471) — see the "JAR provenance" note in §3
 | `prefix` | string | no | **Informational only.** Used for report bucketing (e.g. `prefixHistogram`) — it is never passed to the merge or transform JARs. If you want IDs actually prefixed, do it with a `transformRules` `update` op (see §2.4) or via `mergeSettings.files[...].renaming`. |
 | `transformRules` | array of raw JSON objects | no | Transformer-native rule objects (§2), passed through verbatim, applied to this feed only, before the big merge. Run in array order, after `sharedTransformRules` (if any) and after `pairedWith` pre-merge (if present). |
 | `pairedWith.url` | string | no | A second signup zip for the same agency (e.g. an "upcoming" feed). If present, `pairedWith.url` is merged into `url` using **default** merge settings (JAR auto-detection, no explicit `--file`/`--duplicateDetection` flags) as a preparatory step, **before** this feed participates in the main multi-feed merge. |
+| `defaultAgencyId` | string | no — see §4 | OBA agency namespace for stops when bundle inputs are enabled. |
 
 **AdditionalFile object:**
 
@@ -462,8 +467,69 @@ succeeded by that point — and the failure is logged prominently instead.
   - `droppedDuplicates[]` — up to 500 entries parsed from the merge JAR's captured stdout/stderr, `{file, raw, parsed?}`. Only emitted when `mergeSettings.duplicateHandling` is `log`. `raw` is the JAR's full log line (verified format, `AbstractSingleEntityMergeStrategy.logDuplicateEntity`): `` duplicate entity: type=<class .Class#toString()> id=<AgencyAndId#toString()> ``, e.g. `type=class org.onebusaway.gtfs.model.Stop id=97_1234`. `file` is the GTFS filename the Java entity class maps to. `parsed.id` is the dropped entity's own raw id string (e.g. `97_1234`) — the JAR's log line never names the id of the entity it was kept in favor of, so there is no `keptId`; `parsed` is omitted (not present, rather than `null`) if the line matched `duplicate entity:` but couldn't otherwise be decomposed. A parallel `duplicate key: type=... key=...` message exists for the collection-based merge strategies (`calendar.txt`/`calendar_dates.txt`, `shapes.txt`) but is a distinct format and is not parsed into `droppedDuplicates`.
   - `droppedDuplicatesTruncated` (bool) — `true` if more than 500 duplicates were dropped and the list above was capped.
   - `renameCounts` — map from filename to a **derived, best-effort count** of output ids that appear to have been renamed, for each file present in `mergeSettings.files`. This is derived rather than parsed from a log line because the JAR only logs renames at `DEBUG` (`AbstractIdentifiableSingleEntityMergeStrategy.rename`'s `_log.debug(...)` calls), which this service's default logging verbosity doesn't capture. The derivation counts output ids matching the configured renaming convention's prefix (an index-derived letter for `context`, the owning (non-last) feed's own `agency_id` for `agency`) for each of the seven single-identifiable-id GTFS files (`agency.txt`, `stops.txt`, `routes.txt`, `trips.txt`, `fare_attributes.txt`, `feed_info.txt`, `areas.txt`); `calendar.txt`/`shapes.txt` (a different, key-based collection merge strategy) and `frequencies.txt`/`transfers.txt`/`fare_rules.txt` (no single string id to prefix) are skipped with a warning rather than guessed at.
-- **`stages[]`**: pipeline stage timing/status, in execution order. `key` is one of `watch | pair | prepare | combine | post | report`; `feedId` is present for per-feed stages (`pair`, `prepare`) and absent for whole-job stages (`combine`, `post`, `report`). `status` is `ok` or `error`. Note: `combine` brackets the merge JAR invocation itself, and (per the pipeline diagram from PR #861) the merge+transform+publish work for a whole job is treated as a single logical Render job even though it spans multiple `stages[]` entries here.
+- **`stages[]`**: pipeline stage timing/status, in execution order. `key` is one of `watch | pair | prepare | combine | post | bundleInputs | report`; `feedId` is present for per-feed stages (`pair`, `prepare`) and absent for whole-job stages (`combine`, `post`, `bundleInputs`, `report`). `status` is `ok` or `error`. Note: `combine` brackets the merge JAR invocation itself, and (per the pipeline diagram from PR #861) the merge+transform+publish work for a whole job is treated as a single logical Render job even though it spans multiple `stages[]` entries here. `bundleInputs` only appears when `output.bundleInputsKey`/`output.feedKeys` are set (see §4.3); it runs after `post` (which brackets the merged-zip upload) and before `report`.
 - **`warnings[]`**: free-text, non-fatal issues surfaced during report generation (e.g. a missing expected column, or an input zip that couldn't be analyzed at all).
+
+## 4. Bundle inputs (optional)
+
+When `output.bundleInputsKey` and `output.feedKeys` are both set, the service
+additionally uploads each feed's **prepared** working zip (post pair-merge,
+post transform — the exact files the combine stage consumed) and a
+`bundle-inputs.json` manifest. These are the artifacts an OBA server ingests
+under multi-zip load (one `defaultAgencyId` per zip); `output.key`'s merged
+zip remains the third-party/download artifact.
+
+### 4.1 Config fields
+
+- `output.feedKeys` — object mapping each feed `id` to the object key its
+  prepared zip uploads to. Must cover exactly the configured feeds; keys must
+  be non-empty, must not contain `..`, and must be distinct from each other
+  and from `output.key` / `output.reportKey` / `output.bundleInputsKey`.
+- `output.bundleInputsKey` — object key for the manifest. Required whenever
+  `feedKeys` is present (and vice versa); when both are absent the stage is
+  skipped entirely (existing configs are unaffected).
+- `feeds[].defaultAgencyId` — the OBA agency namespace this feed's stops load
+  under (e.g. King County Metro = `"1"`). Required for every feed when bundle
+  inputs are enabled; ignored otherwise.
+
+### 4.2 bundle-inputs.json (v1)
+
+```json
+{
+  "version": 1,
+  "feeds": [
+    {
+      "id": "metro",
+      "name": "King County Metro",
+      "defaultAgencyId": "1",
+      "key": "combined-feeds/12/5/builds/49/feeds/metro.zip",
+      "url": "https://<endpoint>/<bucket>/combined-feeds/12/5/builds/49/feeds/metro.zip",
+      "byteSize": 1234567,
+      "sha256": "…hex…"
+    }
+  ]
+}
+```
+
+- Feed order preserves the config's `feeds` order (= merge/roster order =
+  intended OBA bundle load order).
+- `url` is the per-build, path-style URL (endpoint/bucket/key) — for dry-run
+  inspection. At publish, the consuming application (OBACloud) rewrites feed
+  URLs to stable keys and injects a top-level `stopConsolidationUrl` **only
+  when a stop-consolidation mapping publication exists**. This service never
+  emits `stopConsolidationUrl`.
+- `byteSize`/`sha256` describe the uploaded zip so the downstream bundler can
+  verify its downloads.
+
+### 4.3 Pipeline semantics
+
+- Stage key: `bundleInputs` (report.json `stages[]`; whole-job, no `feedId`).
+- Runs after the merged zip uploads and before report generation.
+- The feed zips upload first, the manifest last — a manifest never references
+  an object that failed to upload.
+- **A bundle-inputs upload failure fails the run** (unlike report.json, which
+  degrades to a warning): a published build with missing inputs would strand
+  the downstream app service.
 
 ## Appendix: config schema v1 (legacy, backward-compatible)
 

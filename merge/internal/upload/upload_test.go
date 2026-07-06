@@ -55,3 +55,41 @@ func TestUploadBytes(t *testing.T) {
 		t.Errorf("path = %q, want it to end with %q (path-style bucket/key addressing)", gotPath, "/test-bucket/reports/report.json")
 	}
 }
+
+// ObjectURL must produce the same path-style URL shape the uploader PUTs to
+// (endpoint/bucket/key), with no double slashes when the endpoint has a
+// trailing slash. These are the per-build URLs written into
+// bundle-inputs.json for dry-run inspection; Rails rewrites them to stable
+// URLs at publish.
+func TestObjectURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		key      string
+		want     string
+	}{
+		{
+			name:     "plain endpoint",
+			endpoint: "https://accountid.r2.cloudflarestorage.com",
+			key:      "builds/49/feeds/metro.zip",
+			want:     "https://accountid.r2.cloudflarestorage.com/test-bucket/builds/49/feeds/metro.zip",
+		},
+		{
+			name:     "endpoint with trailing slash",
+			endpoint: "https://accountid.r2.cloudflarestorage.com/",
+			key:      "builds/49/bundle-inputs.json",
+			want:     "https://accountid.r2.cloudflarestorage.com/test-bucket/builds/49/bundle-inputs.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := New("k", "s", tt.endpoint, "test-bucket")
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
+			if got := u.ObjectURL(tt.key); got != tt.want {
+				t.Errorf("ObjectURL(%q) = %q, want %q", tt.key, got, tt.want)
+			}
+		})
+	}
+}

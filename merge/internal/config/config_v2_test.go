@@ -445,3 +445,128 @@ func TestLoadNormalizedConfigFromFileInvalidJSON(t *testing.T) {
 		t.Error("expected error for invalid JSON, got none")
 	}
 }
+
+// bundleInputsConfig returns a minimal valid v2 config with the bundle-inputs
+// fields populated, for mutation in the validation table below.
+func bundleInputsConfig() *ConfigV2 {
+	return &ConfigV2{
+		Version: 2,
+		Output: OutputV2{
+			Key:             "builds/1/gtfs.zip",
+			ReportKey:       "builds/1/report.json",
+			BundleInputsKey: "builds/1/bundle-inputs.json",
+			FeedKeys: map[string]string{
+				"metro": "builds/1/feeds/metro.zip",
+				"st":    "builds/1/feeds/st.zip",
+			},
+		},
+		Feeds: []FeedV2{
+			{ID: "metro", Name: "King County Metro", URL: "https://gtfs.example.com/metro.zip", DefaultAgencyID: "1"},
+			{ID: "st", Name: "Sound Transit", URL: "https://gtfs.example.com/st.zip", DefaultAgencyID: "40"},
+		},
+	}
+}
+
+func TestConfigV2ValidateBundleInputs(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(c *ConfigV2)
+		wantErr string // substring; "" means valid
+	}{
+		{name: "valid bundle-inputs config", mutate: func(c *ConfigV2) {}, wantErr: ""},
+		{
+			name: "absent bundle-inputs fields still valid (backcompat)",
+			mutate: func(c *ConfigV2) {
+				c.Output.BundleInputsKey = ""
+				c.Output.FeedKeys = nil
+				c.Feeds[0].DefaultAgencyID = ""
+				c.Feeds[1].DefaultAgencyID = ""
+			},
+			wantErr: "",
+		},
+		{
+			name:    "feedKeys without bundleInputsKey",
+			mutate:  func(c *ConfigV2) { c.Output.BundleInputsKey = "" },
+			wantErr: "feedKeys requires output.bundleInputsKey",
+		},
+		{
+			name:    "bundleInputsKey without feedKeys",
+			mutate:  func(c *ConfigV2) { c.Output.FeedKeys = nil },
+			wantErr: "bundleInputsKey requires output.feedKeys",
+		},
+		{
+			name:    "missing feed key for a feed",
+			mutate:  func(c *ConfigV2) { delete(c.Output.FeedKeys, "st") },
+			wantErr: "missing feedKeys entry for feed 'st'",
+		},
+		{
+			name:    "feed key for unknown feed",
+			mutate:  func(c *ConfigV2) { c.Output.FeedKeys["ghost"] = "builds/1/feeds/ghost.zip" },
+			wantErr: "feedKeys entry for unknown feed 'ghost'",
+		},
+		{
+			name:    "empty feed key",
+			mutate:  func(c *ConfigV2) { c.Output.FeedKeys["metro"] = "" },
+			wantErr: "empty feedKeys entry for feed 'metro'",
+		},
+		{
+			name:    "feed key with dot-dot",
+			mutate:  func(c *ConfigV2) { c.Output.FeedKeys["metro"] = "../escape.zip" },
+			wantErr: "must not contain '..'",
+		},
+		{
+			name:    "bundleInputsKey with dot-dot",
+			mutate:  func(c *ConfigV2) { c.Output.BundleInputsKey = "builds/../bundle-inputs.json" },
+			wantErr: "must not contain '..'",
+		},
+		{
+			name:    "duplicate feed keys",
+			mutate:  func(c *ConfigV2) { c.Output.FeedKeys["st"] = c.Output.FeedKeys["metro"] },
+			wantErr: "duplicate key",
+		},
+		{
+			name:    "feed key collides with output.key",
+			mutate:  func(c *ConfigV2) { c.Output.FeedKeys["metro"] = c.Output.Key },
+			wantErr: "duplicate key",
+		},
+		{
+			name:    "bundleInputsKey collides with reportKey",
+			mutate:  func(c *ConfigV2) { c.Output.BundleInputsKey = c.Output.ReportKey },
+			wantErr: "duplicate key",
+		},
+		{
+			name:    "missing defaultAgencyId when bundle inputs active",
+			mutate:  func(c *ConfigV2) { c.Feeds[1].DefaultAgencyID = "" },
+			wantErr: "feed 'st' missing defaultAgencyId",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := bundleInputsConfig()
+			tt.mutate(cfg)
+			err := cfg.Validate([]string{"gtfs.example.com"})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// Pins that defaultAgencyId is optional when bundle inputs are not configured
+// (an unused stray value is not an error — Rails may send it before M3 gating).
+func TestConfigV2DefaultAgencyIDWithoutBundleInputs(t *testing.T) {
+	cfg := bundleInputsConfig()
+	cfg.Output.BundleInputsKey = ""
+	cfg.Output.FeedKeys = nil
+	// DefaultAgencyID values left set — must still validate.
+	if err := cfg.Validate([]string{"gtfs.example.com"}); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
