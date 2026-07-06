@@ -1,3 +1,10 @@
+# Selects where the OneBusAway CLI JARs come from (see stages 2a/2b):
+#   release (default) — download the pinned JAR_VERSION release from Maven Central
+#   source            — build both CLIs from a pinned gtfs-modules git SHA
+# Declared before the first FROM so the `FROM jars-${JAR_PROVIDER}` selector
+# stage below can expand it.
+ARG JAR_PROVIDER=release
+
 # Stage 1: Build the Go binary
 FROM golang:1-alpine AS builder
 
@@ -13,25 +20,59 @@ COPY merge/ ./
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gtfs-merge cmd/gtfs-merge/main.go
 
-# Stage 2: Build the OneBusAway CLI JARs from source.
+# Stages 2a/2b: obtain the OneBusAway CLI JARs.
 #
-# No released onebusaway-gtfs-merge-cli on Maven Central carries the
-# --duplicateRenaming flag, so agency-prefix duplicate renaming
-# (mergeSettings.files.<file>.renaming: "agency" in config v2) is unusable from
-# a released JAR. That flag exists only on the gtfs-modules PR #471 branch, so
-# we build both CLIs from a pinned SHA of that branch until an upstream release
-# ships. Both are built from the same tree so the merge- and transformer-cli
+# Two interchangeable provider stages satisfy the same contract — a runnable
+# (shaded, Main-Class-bearing) fat JAR at /jars/merge-cli.jar and
+# /jars/transformer-cli.jar — and the JAR_PROVIDER build arg picks which one
+# feeds the runtime image. BuildKit only builds the selected stage, so the
+# default build never clones or compiles gtfs-modules.
+#
+#   release (default): download the pinned JAR_VERSION release of both CLIs
+#     from Maven Central. Fast and dependency-light; prefer this whenever a
+#     release carries everything we need.
+#   source: build both CLIs from a pinned OneBusAway/onebusaway-gtfs-modules
+#     git SHA. Cut over to this when a needed fix or flag has merged upstream
+#     but no release ships it yet (as happened with --duplicateRenaming before
+#     v14.1.0 — see issue #2):
+#       docker build --build-arg JAR_PROVIDER=source \
+#                    --build-arg GTFS_MODULES_REF=<sha> .
+#
+# gtfs-modules v14 compiles with <release>25</release>, so the source builder
+# and the runtime image both use Java 25 (the v14 class files don't run on
+# older JREs).
+
+# Stage 2a: download the released CLI JARs from Maven Central.
+#
+# Each download is verified against Maven Central's published .sha256 (guards
+# corrupt/truncated transfers) and asserted to be the runnable fat JAR by
+# checking for a Main-Class in its manifest, mirroring the source stage's
+# assertion.
+FROM alpine:3 AS jars-release
+
+ARG JAR_VERSION=14.1.0
+
+RUN apk add --no-cache curl unzip
+
+RUN mkdir -p /jars && \
+    for pair in "onebusaway-gtfs-merge-cli:merge-cli.jar" \
+                "onebusaway-gtfs-transformer-cli:transformer-cli.jar"; do \
+      mod="${pair%%:*}"; out="${pair##*:}"; \
+      url="https://repo1.maven.org/maven2/org/onebusaway/${mod}/${JAR_VERSION}/${mod}-${JAR_VERSION}.jar"; \
+      curl -fsSL "$url" -o "/jars/$out" || { echo "ERROR: failed to download $url" >&2; exit 1; }; \
+      curl -fsSL "$url.sha256" -o "/tmp/$out.sha256" || { echo "ERROR: failed to download $url.sha256" >&2; exit 1; }; \
+      echo "$(cat "/tmp/$out.sha256")  /jars/$out" | sha256sum -c - || \
+        { echo "ERROR: $out failed sha256 verification" >&2; exit 1; }; \
+      unzip -p "/jars/$out" META-INF/MANIFEST.MF | grep -q '^Main-Class:' || \
+        { echo "ERROR: $out has no Main-Class (not the runnable fat jar)" >&2; exit 1; }; \
+    done
+
+# Stage 2b: build the CLI JARs from gtfs-modules source.
+#
+# Both CLIs are built from the same tree so the merge- and transformer-cli
 # stay on a single, coherent gtfs-modules version. Pinned by full SHA (not
 # branch) for reproducible image builds; bump GTFS_MODULES_REF deliberately.
-#
-# Revert: once a gtfs-modules release containing PR #471 is cut, drop this
-# stage and return to release pinning via a JAR_VERSION arg + Maven Central
-# curls (see issue #2).
-#
-# gtfs-modules 14.0.1-SNAPSHOT compiles with <release>25</release>, so this
-# stage and the runtime image below both need a Java 25 JDK/JRE (the older
-# 11.2.2 JARs ran on 17/21; the v14 class files do not).
-FROM maven:3.9-eclipse-temurin-25 AS jars
+FROM maven:3.9-eclipse-temurin-25 AS jars-source
 
 # onebusaway-gtfs-modules docs-and-cli (PR #471), on top of 14.0.1-SNAPSHOT
 ARG GTFS_MODULES_REF=f9cd94d44facfee8234ab6684bd59ce831168193
@@ -65,6 +106,9 @@ RUN git clone https://github.com/OneBusAway/onebusaway-gtfs-modules.git /src && 
       cp "$matches" "/jars/$out"; \
     done
 
+# Selector: resolves to jars-release or jars-source per JAR_PROVIDER.
+FROM jars-${JAR_PROVIDER} AS jars
+
 # Stage 3: Runtime image
 FROM eclipse-temurin:25-jre
 
@@ -84,8 +128,7 @@ WORKDIR /app
 COPY --from=builder /build/gtfs-merge /app/gtfs-merge
 RUN chmod +x /app/gtfs-merge
 
-# Copy the OneBusAway CLI JARs built (and selected) from source in the jars
-# stage.
+# Copy the OneBusAway CLI JARs from the selected provider stage.
 COPY --from=jars /jars/merge-cli.jar /app/merge-cli.jar
 COPY --from=jars /jars/transformer-cli.jar /app/transformer-cli.jar
 

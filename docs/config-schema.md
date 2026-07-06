@@ -15,9 +15,10 @@ defines:
 Everything in this document reflects the real behavior of
 `onebusaway-gtfs-merge-cli` and `onebusaway-gtfs-transformer-cli` as verified
 against their source in `gtfs-modules`. The op vocabulary and merge semantics
-were pinned against `11.2.2`; the deployed image now builds `14.0.1-SNAPSHOT`
-from a pinned SHA (`f9cd94d4`, PR #471) — see the "JAR provenance" note in §3
-— and the documented flags and log formats were re-verified against it.
+were pinned against `11.2.2`; the deployed image now ships the `14.1.0`
+release (the first to carry `--duplicateRenaming`, from PR #471) — see the
+"JAR provenance" note in §3 — and the documented flags and log formats were
+re-verified against the v14 tree.
 
 ## 1. Config schema v2
 
@@ -374,22 +375,18 @@ succeeded by that point — and the failure is logged prominently instead.
 
 > **JAR provenance (agency renaming):**
 > `mergeSettings.files[...].renaming: "agency"` (§1.5) depends on a
-> `--duplicateRenaming` CLI flag that **does not exist in any released
-> `onebusaway-gtfs-merge-cli` on Maven Central (including `11.2.2` and the
-> latest `14.0.0`)**. That flag was added to `gtfs-modules` as unreleased
-> work (commit `f9cd94d4`, on top of `14.0.1-SNAPSHOT`) specifically to
-> support this pipeline; verified by downloading the real `11.2.2` artifact
-> from Maven Central and confirming its `--help` output has no
-> `--duplicateRenaming` option, then building the `gtfs-modules` checkout
-> from source and confirming the option exists and works there.
+> `--duplicateRenaming` CLI flag that first shipped in the
+> `onebusaway-gtfs-merge-cli` **`14.1.0`** release (added to `gtfs-modules`
+> as commit `f9cd94d4` specifically to support this pipeline; no earlier
+> release — `11.2.2` through `14.0.0` — has it, see issue #2).
 >
-> Because of that, the `Dockerfile` **builds both CLI JARs from source** at a
-> pinned `gtfs-modules` SHA (`GTFS_MODULES_REF`, see issue #2) instead of
-> downloading a Maven Central release, so `renaming: "agency"` works against
-> the deployed image today. When an upstream release containing the flag
-> ships, the builder stage can be dropped in favor of release pinning again.
-> Note the source-built JARs are `14.0.1-SNAPSHOT` and target Java 25, so the
-> runtime image is a Java 25 JRE.
+> The `Dockerfile` obtains both CLI JARs from a provider stage selected by
+> the `JAR_PROVIDER` build arg: `release` (default) downloads the pinned
+> `JAR_VERSION` (currently `14.1.0`) from Maven Central, and `source` builds
+> both CLIs from a pinned `gtfs-modules` SHA (`GTFS_MODULES_REF`) for when a
+> needed upstream change hasn't shipped in a release yet — as was the case
+> for this flag before `14.1.0`. The v14 JARs target Java 25 either way, so
+> the runtime image is a Java 25 JRE.
 >
 > The Go service still only emits `--duplicateRenaming` when at least one
 > file in `mergeSettings.files` requests `renaming: "agency"` (see §1.5's
@@ -397,7 +394,7 @@ succeeded by that point — and the failure is logged prominently instead.
 > misaligning the JAR's positional `--file`/`--duplicateDetection`/
 > `--duplicateRenaming` pairing), so detection-only configs and
 > `renaming: "context"`/empty configs stay compatible with any JAR that
-> lacks the flag, should the image ever revert to a release build.
+> lacks the flag, should the image ever pin a pre-`14.1.0` release.
 
 ```json
 {
