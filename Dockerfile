@@ -1,8 +1,6 @@
-# Selects where the OneBusAway CLI JARs come from (see stages 2a/2b):
-#   release (default) — download the pinned JAR_VERSION release from Maven Central
-#   source            — build both CLIs from a pinned gtfs-modules git SHA
-# Declared before the first FROM so the `FROM jars-${JAR_PROVIDER}` selector
-# stage below can expand it.
+# Selects which jars-* provider stage feeds the runtime image (see "Stages
+# 2a/2b" below). Declared before the first FROM so the
+# `FROM jars-${JAR_PROVIDER}` selector stage can expand it.
 ARG JAR_PROVIDER=release
 
 # Stage 1: Build the Go binary
@@ -25,8 +23,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gtfs-merge cmd/gt
 # Two interchangeable provider stages satisfy the same contract — a runnable
 # (shaded, Main-Class-bearing) fat JAR at /jars/merge-cli.jar and
 # /jars/transformer-cli.jar — and the JAR_PROVIDER build arg picks which one
-# feeds the runtime image. BuildKit only builds the selected stage, so the
-# default build never clones or compiles gtfs-modules.
+# feeds the runtime image. The contract is asserted once, in the jars-verified
+# stage below, so a provider that ships a thin or wrong jar fails the build
+# loudly. BuildKit only builds the selected stage, so the default build never
+# clones or compiles gtfs-modules.
 #
 #   release (default): download the pinned JAR_VERSION release of both CLIs
 #     from Maven Central. Fast and dependency-light; prefer this whenever a
@@ -44,27 +44,23 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gtfs-merge cmd/gt
 
 # Stage 2a: download the released CLI JARs from Maven Central.
 #
-# Each download is verified against Maven Central's published .sha256 (guards
-# corrupt/truncated transfers) and asserted to be the runnable fat JAR by
-# checking for a Main-Class in its manifest, mirroring the source stage's
-# assertion.
+# Pinned by version AND sha256 digest (the digests are published beside each
+# artifact as <jar>.sha256): a JAR_VERSION bump must update the digests too,
+# keeping upgrades deliberate and downloads tamper-evident. busybox wget and
+# sha256sum cover everything this stage does, so no packages are installed.
 FROM alpine:3 AS jars-release
 
 ARG JAR_VERSION=14.1.0
+ARG MERGE_CLI_SHA256=79f8777493aee236e379e6220607bc1fc866fe1d40e677c38aad4ced3cf026bb
+ARG TRANSFORMER_CLI_SHA256=364bbd4d3519d491dd406944b29c1bed3a0e00134b9a9ce9c327390fa7209709
 
-RUN apk add --no-cache curl unzip
-
-RUN mkdir -p /jars && \
-    for pair in "onebusaway-gtfs-merge-cli:merge-cli.jar" \
-                "onebusaway-gtfs-transformer-cli:transformer-cli.jar"; do \
-      mod="${pair%%:*}"; out="${pair##*:}"; \
-      url="https://repo1.maven.org/maven2/org/onebusaway/${mod}/${JAR_VERSION}/${mod}-${JAR_VERSION}.jar"; \
-      curl -fsSL "$url" -o "/jars/$out" || { echo "ERROR: failed to download $url" >&2; exit 1; }; \
-      curl -fsSL "$url.sha256" -o "/tmp/$out.sha256" || { echo "ERROR: failed to download $url.sha256" >&2; exit 1; }; \
-      echo "$(cat "/tmp/$out.sha256")  /jars/$out" | sha256sum -c - || \
-        { echo "ERROR: $out failed sha256 verification" >&2; exit 1; }; \
-      unzip -p "/jars/$out" META-INF/MANIFEST.MF | grep -q '^Main-Class:' || \
-        { echo "ERROR: $out has no Main-Class (not the runnable fat jar)" >&2; exit 1; }; \
+RUN set -e; mkdir -p /jars; \
+    for triple in "onebusaway-gtfs-merge-cli:merge-cli.jar:${MERGE_CLI_SHA256}" \
+                  "onebusaway-gtfs-transformer-cli:transformer-cli.jar:${TRANSFORMER_CLI_SHA256}"; do \
+      mod="${triple%%:*}"; rest="${triple#*:}"; out="${rest%%:*}"; sha="${rest#*:}"; \
+      wget -q "https://repo1.maven.org/maven2/org/onebusaway/${mod}/${JAR_VERSION}/${mod}-${JAR_VERSION}.jar" \
+        -O "/jars/$out"; \
+      echo "$sha  /jars/$out" | sha256sum -c -; \
     done
 
 # Stage 2b: build the CLI JARs from gtfs-modules source.
@@ -82,10 +78,10 @@ ARG GTFS_MODULES_REF=f9cd94d44facfee8234ab6684bd59ce831168193
 # that one shaded JAR per module by excluding the original-*.jar (and, defensively,
 # any -sources/-javadoc jars — already suppressed by the skip flags above). The
 # two modules name their main artifact differently (one keeps the version, one
-# doesn't), so match by exclusion rather than a fixed name. Then assert exactly
-# one match and that it is actually a fat jar (has a Main-Class), so a future
-# GTFS_MODULES_REF bump that adds a stray classifier jar or drops the shade step
-# fails the build loudly instead of silently shipping the wrong/thin jar.
+# doesn't), so match by exclusion rather than a fixed name, and assert exactly
+# one match so a future GTFS_MODULES_REF bump that adds a stray classifier jar
+# fails the build loudly instead of silently shipping the wrong jar. (The
+# fat-jar/Main-Class assertion lives in the shared jars-verified stage below.)
 RUN git clone https://github.com/OneBusAway/onebusaway-gtfs-modules.git /src && \
     cd /src && \
     git checkout ${GTFS_MODULES_REF} && \
@@ -99,15 +95,22 @@ RUN git clone https://github.com/OneBusAway/onebusaway-gtfs-modules.git /src && 
                    ! -name '*-sources.jar' ! -name '*-javadoc.jar' ! -name 'original-*.jar')"; \
       count="$(printf '%s' "$matches" | grep -c .)"; \
       [ "$count" -eq 1 ] || { echo "ERROR: expected 1 shaded jar in $mod/target, found $count:" >&2; printf '%s\n' "$matches" >&2; exit 1; }; \
-      d="$(mktemp -d)"; \
-      ( cd "$d" && jar xf "/src/$matches" META-INF/MANIFEST.MF ) && \
-        grep -q '^Main-Class:' "$d/META-INF/MANIFEST.MF" || \
-        { echo "ERROR: $matches has no Main-Class (shade step likely didn't run)" >&2; exit 1; }; \
       cp "$matches" "/jars/$out"; \
     done
 
-# Selector: resolves to jars-release or jars-source per JAR_PROVIDER.
+# Selector: resolves to the provider stage JAR_PROVIDER names.
 FROM jars-${JAR_PROVIDER} AS jars
+
+# Shared contract check, run against whichever provider was selected: both
+# jars must exist (the COPY fails otherwise) and be runnable fat JARs with a
+# Main-Class in the manifest. Providers only need to produce the files; any
+# present or future provider gets this assertion for free.
+FROM alpine:3 AS jars-verified
+COPY --from=jars /jars/merge-cli.jar /jars/transformer-cli.jar /jars/
+RUN set -e; for jar in /jars/merge-cli.jar /jars/transformer-cli.jar; do \
+      unzip -p "$jar" META-INF/MANIFEST.MF | grep -q '^Main-Class:' || \
+        { echo "ERROR: $jar has no Main-Class (not a runnable fat jar)" >&2; exit 1; }; \
+    done
 
 # Stage 3: Runtime image
 FROM eclipse-temurin:25-jre
@@ -128,9 +131,9 @@ WORKDIR /app
 COPY --from=builder /build/gtfs-merge /app/gtfs-merge
 RUN chmod +x /app/gtfs-merge
 
-# Copy the OneBusAway CLI JARs from the selected provider stage.
-COPY --from=jars /jars/merge-cli.jar /app/merge-cli.jar
-COPY --from=jars /jars/transformer-cli.jar /app/transformer-cli.jar
+# Copy the OneBusAway CLI JARs from the selected, verified provider stage.
+COPY --from=jars-verified /jars/merge-cli.jar /app/merge-cli.jar
+COPY --from=jars-verified /jars/transformer-cli.jar /app/transformer-cli.jar
 
 # Use ENTRYPOINT for the Go binary
 ENTRYPOINT ["/app/gtfs-merge"]

@@ -15,10 +15,10 @@ defines:
 Everything in this document reflects the real behavior of
 `onebusaway-gtfs-merge-cli` and `onebusaway-gtfs-transformer-cli` as verified
 against their source in `gtfs-modules`. The op vocabulary and merge semantics
-were pinned against `11.2.2`; the deployed image now ships the `14.1.0`
-release (the first to carry `--duplicateRenaming`, from PR #471) — see the
-"JAR provenance" note in §3 — and the documented flags and log formats were
-re-verified against the v14 tree.
+were pinned against `11.2.2`; the deployed image now ships a v14 JAR
+(`14.1.0` was the first release to carry `--duplicateRenaming`, from PR
+#471) — see the "JAR provenance" note in §3 — and the documented flags and
+log formats were re-verified against the v14 tree.
 
 ## 1. Config schema v2
 
@@ -380,13 +380,12 @@ succeeded by that point — and the failure is logged prominently instead.
 > as commit `f9cd94d4` specifically to support this pipeline; no earlier
 > release — `11.2.2` through `14.0.0` — has it, see issue #2).
 >
-> The `Dockerfile` obtains both CLI JARs from a provider stage selected by
-> the `JAR_PROVIDER` build arg: `release` (default) downloads the pinned
-> `JAR_VERSION` (currently `14.1.0`) from Maven Central, and `source` builds
-> both CLIs from a pinned `gtfs-modules` SHA (`GTFS_MODULES_REF`) for when a
-> needed upstream change hasn't shipped in a release yet — as was the case
-> for this flag before `14.1.0`. The v14 JARs target Java 25 either way, so
-> the runtime image is a Java 25 JRE.
+> Which JAR the image ships is pinned by the `Dockerfile`'s `JAR_PROVIDER`/
+> `JAR_VERSION` build args (a Maven Central release by default, or a
+> from-source `gtfs-modules` build for changes no release ships yet — as was
+> the case for this flag before `14.1.0`); see the Dockerfile's "Stages
+> 2a/2b" comment for the mechanics. The v14 JARs target Java 25 either way,
+> so the runtime image is a Java 25 JRE.
 >
 > The Go service still only emits `--duplicateRenaming` when at least one
 > file in `mergeSettings.files` requests `renaming: "agency"` (see §1.5's
