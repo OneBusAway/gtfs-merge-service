@@ -1,5 +1,5 @@
-# Selects which jars-* provider stage feeds the runtime image (see "Stages
-# 2a/2b" below). Declared before the first FROM so the
+# Selects which jars-* provider stage feeds the runtime image: "release" or
+# "source" (see "Stages 2a/2b" below). Declared before the first FROM so the
 # `FROM jars-${JAR_PROVIDER}` selector stage can expand it.
 ARG JAR_PROVIDER=release
 
@@ -48,6 +48,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gtfs-merge cmd/gt
 # artifact as <jar>.sha256): a JAR_VERSION bump must update the digests too,
 # keeping upgrades deliberate and downloads tamper-evident. busybox wget and
 # sha256sum cover everything this stage does, so no packages are installed.
+# (busybox wget's -q still prints errors; GNU wget's -q would swallow them —
+# revisit if this stage ever moves off alpine/busybox.)
 FROM alpine:3 AS jars-release
 
 ARG JAR_VERSION=14.1.0
@@ -60,7 +62,10 @@ RUN set -e; mkdir -p /jars; \
       mod="${triple%%:*}"; rest="${triple#*:}"; out="${rest%%:*}"; sha="${rest#*:}"; \
       wget -q "https://repo1.maven.org/maven2/org/onebusaway/${mod}/${JAR_VERSION}/${mod}-${JAR_VERSION}.jar" \
         -O "/jars/$out"; \
-      echo "$sha  /jars/$out" | sha256sum -c -; \
+      echo "$sha  /jars/$out" | sha256sum -c - || \
+        { echo "ERROR: sha256 mismatch for $out. If you bumped JAR_VERSION, update" \
+               "MERGE_CLI_SHA256/TRANSFORMER_CLI_SHA256 from the .sha256 files on Maven Central." >&2; \
+          exit 1; }; \
     done
 
 # Stage 2b: build the CLI JARs from gtfs-modules source.
@@ -70,19 +75,21 @@ RUN set -e; mkdir -p /jars; \
 # branch) for reproducible image builds; bump GTFS_MODULES_REF deliberately.
 FROM maven:3.9-eclipse-temurin-25 AS jars-source
 
-# onebusaway-gtfs-modules docs-and-cli (PR #471), on top of 14.0.1-SNAPSHOT
-ARG GTFS_MODULES_REF=f9cd94d44facfee8234ab6684bd59ce831168193
+# Default: the v14.1.0 release commit, so a source build without an explicit
+# GTFS_MODULES_REF produces the same code the release provider ships. Pass a
+# newer SHA when cutting over for unreleased upstream changes.
+ARG GTFS_MODULES_REF=5f5720139f1384680238d2be86a5eac1ea267c54
 
 # The maven-shade-plugin replaces each module's main artifact with a runnable
 # fat JAR, leaving the non-runnable thin jar as original-*.jar beside it. Select
 # that one shaded JAR per module by excluding the original-*.jar (and, defensively,
-# any -sources/-javadoc jars — already suppressed by the skip flags above). The
+# any -sources/-javadoc jars — already suppressed by the mvn skip flags). The
 # two modules name their main artifact differently (one keeps the version, one
 # doesn't), so match by exclusion rather than a fixed name, and assert exactly
 # one match so a future GTFS_MODULES_REF bump that adds a stray classifier jar
 # fails the build loudly instead of silently shipping the wrong jar. (The
 # fat-jar/Main-Class assertion lives in the shared jars-verified stage below.)
-RUN git clone https://github.com/OneBusAway/onebusaway-gtfs-modules.git /src && \
+RUN set -e; git clone https://github.com/OneBusAway/onebusaway-gtfs-modules.git /src && \
     cd /src && \
     git checkout ${GTFS_MODULES_REF} && \
     mvn -q -pl onebusaway-gtfs-merge-cli,onebusaway-gtfs-transformer-cli -am package \
@@ -98,7 +105,7 @@ RUN git clone https://github.com/OneBusAway/onebusaway-gtfs-modules.git /src && 
       cp "$matches" "/jars/$out"; \
     done
 
-# Selector: resolves to the provider stage JAR_PROVIDER names.
+# Selector: resolves to the provider stage named by JAR_PROVIDER.
 FROM jars-${JAR_PROVIDER} AS jars
 
 # Shared contract check, run against whichever provider was selected: both
@@ -107,8 +114,14 @@ FROM jars-${JAR_PROVIDER} AS jars
 # present or future provider gets this assertion for free.
 FROM alpine:3 AS jars-verified
 COPY --from=jars /jars/merge-cli.jar /jars/transformer-cli.jar /jars/
+# Extraction and assertion are separate steps so each failure names its real
+# cause (a corrupt/truncated jar vs a thin jar without a Main-Class). Don't
+# recombine with pipefail: grep -q exits at first match and would SIGPIPE
+# unzip, intermittently failing the success path.
 RUN set -e; for jar in /jars/merge-cli.jar /jars/transformer-cli.jar; do \
-      unzip -p "$jar" META-INF/MANIFEST.MF | grep -q '^Main-Class:' || \
+      unzip -p "$jar" META-INF/MANIFEST.MF > /tmp/manifest || \
+        { echo "ERROR: $jar is not a readable zip or lacks META-INF/MANIFEST.MF" >&2; exit 1; }; \
+      grep -q '^Main-Class:' /tmp/manifest || \
         { echo "ERROR: $jar has no Main-Class (not a runnable fat jar)" >&2; exit 1; }; \
     done
 

@@ -80,7 +80,7 @@ make test-integration # Integration tests (requires JAR)
 
 ## Important Notes
 
-- The OneBusAway merge/transformer CLI JARs come from one of two Dockerfile provider stages selected by the `JAR_PROVIDER` build arg: `release` (default) downloads a digest-pinned release from Maven Central; `source` builds both CLIs from a pinned `onebusaway-gtfs-modules` git SHA for when a needed upstream change hasn't shipped in a release yet. The Dockerfile's "Stages 2a/2b" comment is the canonical description, including current pins and the source-build invocation. gtfs-modules v14 targets Java 25, so both the source builder and runtime images use Java 25.
+- The OneBusAway merge/transformer CLI JARs come from one of two Dockerfile provider stages selected by the `JAR_PROVIDER` build arg: `release` (default) downloads a digest-pinned release from Maven Central; `source` builds both CLIs from a pinned `onebusaway-gtfs-modules` git SHA for when a needed upstream change hasn't shipped in a release yet. The Dockerfile's "Stages 2a/2b" section is the canonical description, including current pins and the source-build invocation. gtfs-modules v14 targets Java 25, so both the source builder and runtime images use Java 25.
 - The service validates GTFS feeds before and after merging when configured
 - S3 uploads require AWS credentials via environment variables or IAM role
 - Output can be uploaded to S3-compatible storage services; requires AWS credentials set via .env

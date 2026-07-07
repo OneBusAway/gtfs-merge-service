@@ -382,7 +382,8 @@ succeeded by that point — and the failure is logged prominently instead.
 >
 > Which JAR the image ships is pinned by the `Dockerfile`'s `JAR_PROVIDER`/
 > `JAR_VERSION` build args (a Maven Central release by default, or a
-> from-source `gtfs-modules` build for changes no release ships yet — as was
+> from-source `gtfs-modules` build pinned by `GTFS_MODULES_REF` instead of
+> `JAR_VERSION`, for changes no release ships yet — as was
 > the case for this flag before `14.1.0`); see the Dockerfile's "Stages
 > 2a/2b" comment for the mechanics. The v14 JARs target Java 25 either way,
 > so the runtime image is a Java 25 JRE.
